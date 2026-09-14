@@ -1,0 +1,21 @@
+FROM alpine:latest
+
+RUN apk add --no-cache \
+    chromium \
+    nss \
+    freetype \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont \
+    nodejs \
+    npm
+
+WORKDIR /app
+
+RUN npm install --no-package-lock puppeteer-core
+
+COPY test_ui.cjs .
+
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+
+CMD ["node", "test_ui.cjs"]
