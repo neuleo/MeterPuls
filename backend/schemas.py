@@ -190,3 +190,9 @@ class DashboardAnalyticsResponse(BaseModel):
     history: List[TimeSeriesPoint]
     granularity: str
     timeframe: str = "30d"
+
+class ExportDataResponse(BaseModel):
+    ai_prompt: str
+    csv_readings: str
+    csv_monthly: str
+    summary_text: str

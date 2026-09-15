@@ -29,9 +29,14 @@ import { formatCurrency, formatNumber } from '../utils/formatters';
 interface DashboardProps {
   onOpenScan: () => void;
   onSelectCategory: (category: MeterCategory) => void;
+  onOpenExport?: () => void;
 }
 
-export const Dashboard: React.FC<DashboardProps> = ({ onOpenScan, onSelectCategory }) => {
+export const Dashboard: React.FC<DashboardProps> = ({
+  onOpenScan,
+  onSelectCategory,
+  onOpenExport
+}) => {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -303,6 +308,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ onOpenScan, onSelectCatego
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
+
+          {/* AI / CSV Export button */}
+          {onOpenExport && (
+            <button
+              onClick={onOpenExport}
+              title="Daten für KI kopieren oder als CSV exportieren"
+              className="flex items-center space-x-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-emerald-400 rounded-xl border border-slate-800 text-xs font-medium transition-colors"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+              <span>KI-Export &amp; CSV</span>
+            </button>
+          )}
         </div>
       </div>
 

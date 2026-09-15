@@ -61,6 +61,7 @@ interface CategoryDetailDashboardProps {
   onOpenScan: () => void;
   onOpenHistory: (meter: Meter) => void;
   onNavigateToContracts: () => void;
+  onOpenExport?: () => void;
 }
 
 export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = ({
@@ -69,7 +70,8 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
   onSelectCategory,
   onOpenScan,
   onOpenHistory,
-  onNavigateToContracts
+  onNavigateToContracts,
+  onOpenExport
 }) => {
   const [data, setData] = useState<DashboardData | null>(null);
   const [contracts, setContracts] = useState<Record<MeterCategory, Contract | null>>({
@@ -503,6 +505,18 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
               );
             })}
           </div>
+
+          {onOpenExport && (
+            <button
+              type="button"
+              onClick={onOpenExport}
+              title="Daten für KI kopieren oder als CSV exportieren"
+              className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-emerald-400 text-xs font-medium transition-colors"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="hidden sm:inline">KI-Export &amp; CSV</span>
+            </button>
+          )}
 
           <button
             type="button"

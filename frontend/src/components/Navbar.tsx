@@ -5,19 +5,22 @@ import {
   FileText,
   Bot,
   Camera,
-  Plus
+  Plus,
+  Sparkles
 } from 'lucide-react';
 
 interface NavbarProps {
   currentTab: string;
   onTabChange: (tab: string) => void;
   onOpenScan: () => void;
+  onOpenExport?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
   currentTab,
   onTabChange,
-  onOpenScan
+  onOpenScan,
+  onOpenExport
 }) => {
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: Activity },
@@ -74,7 +77,19 @@ export const Navbar: React.FC<NavbarProps> = ({
           </nav>
 
           {/* Action Button */}
-          <div className="flex items-center space-x-3">
+          <div className="flex items-center space-x-2 sm:space-x-3">
+            {onOpenExport && (
+              <button
+                onClick={onOpenExport}
+                className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-slate-300 hover:text-emerald-400 font-medium text-xs border border-slate-800 hover:border-slate-700 shadow-sm transition-all"
+                title="KI-Prompt in Zwischenablage kopieren oder CSV herunterladen"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="hidden sm:inline">KI-Export &amp; CSV</span>
+                <span className="sm:hidden">Export</span>
+              </button>
+            )}
+
             <button
               onClick={onOpenScan}
               className="hidden sm:inline-flex items-center space-x-2 px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-medium text-sm shadow-lg shadow-emerald-500/25 transition-all transform active:scale-95"

@@ -7,6 +7,7 @@ import { AISettings } from './components/AISettings';
 import { ScanMeterModal } from './components/ScanMeterModal';
 import { ReadingHistoryModal } from './components/ReadingHistoryModal';
 import { CategoryDetailDashboard } from './components/CategoryDetailDashboard';
+import { ExportModal } from './components/ExportModal';
 import { Meter, MeterCategory } from './types';
 import { api } from './api';
 
@@ -20,6 +21,7 @@ export const App: React.FC = () => {
   });
   const [meters, setMeters] = useState<Meter[]>([]);
   const [isScanModalOpen, setIsScanModalOpen] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [selectedHistoryMeter, setSelectedHistoryMeter] = useState<Meter | null>(null);
 
   const handleTabChange = (tab: string) => {
@@ -57,6 +59,7 @@ export const App: React.FC = () => {
         currentTab={currentTab}
         onTabChange={handleTabChange}
         onOpenScan={() => setIsScanModalOpen(true)}
+        onOpenExport={() => setIsExportModalOpen(true)}
       />
 
       {/* Main Content Area */}
@@ -74,6 +77,7 @@ export const App: React.FC = () => {
                 localStorage.setItem('meterpulse_detail_category', cat);
               }}
               onOpenScan={() => setIsScanModalOpen(true)}
+              onOpenExport={() => setIsExportModalOpen(true)}
               onOpenHistory={(meter) => setSelectedHistoryMeter(meter)}
               onNavigateToContracts={() => {
                 setSelectedDetailCategory(null);
@@ -83,6 +87,7 @@ export const App: React.FC = () => {
           ) : (
             <Dashboard
               onOpenScan={() => setIsScanModalOpen(true)}
+              onOpenExport={() => setIsExportModalOpen(true)}
               onSelectCategory={handleSelectCategory}
             />
           )
@@ -117,6 +122,12 @@ export const App: React.FC = () => {
         onClose={() => setSelectedHistoryMeter(null)}
         meter={selectedHistoryMeter}
         onRefresh={loadMeters}
+      />
+
+      {/* Export / AI Modal */}
+      <ExportModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
       />
     </div>
   );

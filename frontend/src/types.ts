@@ -136,3 +136,10 @@ export interface DashboardData {
   granularity: 'day' | 'week' | 'month';
   timeframe?: string;
 }
+
+export interface ExportDataResponse {
+  ai_prompt: string;
+  csv_readings: string;
+  csv_monthly: string;
+  summary_text: string;
+}

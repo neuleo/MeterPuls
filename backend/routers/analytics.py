@@ -4,10 +4,25 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from database import get_db
 from models import Meter, Contract
-from schemas import DashboardAnalyticsResponse
+from schemas import DashboardAnalyticsResponse, ExportDataResponse
 from calculations import calculate_time_series, calculate_contract_summary
+from export_service import generate_export_data
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
+
+@router.get("/export", response_model=ExportDataResponse)
+def get_export_data(db: Session = Depends(get_db)):
+    """
+    Returns pre-formatted AI prompt markdown and CSV datasets (readings and monthly summaries)
+    ready for 1-click copy to clipboard or direct CSV download.
+    """
+    data = generate_export_data(db)
+    return ExportDataResponse(
+        ai_prompt=data["ai_prompt"],
+        csv_readings=data["csv_readings"],
+        csv_monthly=data["csv_monthly"],
+        summary_text=data["summary_text"]
+    )
 
 @router.get("/dashboard", response_model=DashboardAnalyticsResponse)
 def get_dashboard_analytics(

@@ -7,7 +7,8 @@ import {
   AIScanResult,
   AIContractScanResult,
   DashboardData,
-  MeterCategory
+  MeterCategory,
+  ExportDataResponse
 } from './types';
 
 const API_BASE = '/api';
@@ -234,5 +235,10 @@ export const api = {
     }
     const res = await fetch(url);
     return handleResponse<DashboardData>(res);
+  },
+
+  async getExportData(): Promise<ExportDataResponse> {
+    const res = await fetch(`${API_BASE}/analytics/export`);
+    return handleResponse<ExportDataResponse>(res);
   }
 };
