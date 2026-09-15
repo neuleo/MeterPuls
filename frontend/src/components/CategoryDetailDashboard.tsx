@@ -171,6 +171,7 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
   const monthlyPayment = contract?.monthly_payment ?? summary?.monthly_payment ?? 0;
   const unitPrice = contract?.unit_price ?? summary?.unit_price ?? 0;
   const baseFeeMonthly = contract?.base_fee_monthly ?? summary?.base_fee_monthly ?? 0;
+  const dailyBaseFee = baseFeeMonthly > 0 ? baseFeeMonthly / 30.4 : 0;
   const bonusOneTime = contract?.bonus_one_time ?? summary?.bonus_one_time ?? 0;
 
   // Key figures
@@ -261,6 +262,8 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
       dailyCost: number;
       weeklyCost: number;
       monthlyCost: number;
+      consumptionCost: number;
+      baseFeeCost: number;
       totalCost: number;
       trendDailyPct?: number;
       notes?: string | null;
@@ -290,7 +293,9 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
         const dailyCost = (dailyConsumption * unitPrice) + dailyBaseFee;
         const weeklyCost = dailyCost * 7;
         const monthlyCost = dailyCost * 30.4;
-        const totalCost = (delta * unitPrice) + (dailyBaseFee * durationDays);
+        const consumptionCost = delta * unitPrice;
+        const baseFeeCost = dailyBaseFee * durationDays;
+        const totalCost = consumptionCost + baseFeeCost;
 
         meterIntervals.push({
           id: `${m.id}-${curr.id}`,
@@ -311,6 +316,8 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
           dailyCost,
           weeklyCost,
           monthlyCost,
+          consumptionCost,
+          baseFeeCost,
           totalCost,
           notes: curr.notes,
           imagePath: curr.image_path
@@ -1146,9 +1153,16 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
                         </span>
                       )}
 
-                      <span className="text-xs font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
-                        Gesamt: {formatCurrency(iv.totalCost)}
-                      </span>
+                      <div className="flex flex-col items-end">
+                        <span className="text-xs font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-md border border-emerald-500/20">
+                          Gesamt: {formatCurrency(iv.totalCost)}
+                        </span>
+                        {baseFeeMonthly > 0 && (
+                          <span className="text-[10px] text-slate-400 mt-0.5">
+                            {formatCurrency(iv.consumptionCost)} Verbrauch + {formatCurrency(iv.baseFeeCost)} Grundpreis ({iv.durationDays} Tg.)
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -1178,6 +1192,9 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
                         <span className="font-mono text-base font-extrabold text-sky-400">
                           +{formatNumber(iv.delta, 2)} {unit}
                         </span>
+                        <span className="text-[10px] text-slate-400 block font-mono">
+                          = {formatCurrency(iv.consumptionCost)} Gas
+                        </span>
                       </div>
                     </div>
 
@@ -1192,6 +1209,11 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
                         <span className="font-mono text-[11px] text-emerald-400 block mt-0.5">
                           ~{formatCurrency(iv.dailyCost)} / Tag
                         </span>
+                        {baseFeeMonthly > 0 && (
+                          <span className="text-[9px] text-slate-500 block">
+                            (inkl. {formatCurrency(dailyBaseFee)} Grundpreis)
+                          </span>
+                        )}
                       </div>
 
                       {/* Per Week */}
