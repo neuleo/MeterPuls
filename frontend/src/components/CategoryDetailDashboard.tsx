@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Zap,
   Flame,
@@ -23,7 +23,14 @@ import {
   RefreshCw,
   Sliders,
   ChevronRight,
-  Sun
+  ChevronDown,
+  ChevronUp,
+  Sun,
+  Activity,
+  ArrowRight,
+  BarChart3,
+  LineChart,
+  CalendarRange
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -36,12 +43,13 @@ import {
   CartesianGrid,
   ReferenceLine
 } from 'recharts';
-import { Meter, MeterCategory, Contract, DashboardData, CategorySummary, TimeSeriesPoint } from '../types';
+import { Meter, MeterCategory, Contract, DashboardData, CategorySummary, TimeSeriesPoint, Reading } from '../types';
 import { api } from '../api';
 import {
   formatCurrency,
   formatNumber,
   formatDate,
+  formatDateTime,
   getCategoryColor,
   getCategoryLabel
 } from '../utils/formatters';
@@ -70,14 +78,21 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
     water: null
   });
   const [meters, setMeters] = useState<Meter[]>([]);
+  const [readings, setReadings] = useState<Reading[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Timeframe and granularity filters
+  // Timeframe and granularity filters for aggregated bar view
   const [timeframe, setTimeframe] = useState<'30d' | '90d' | 'year' | 'custom'>('year');
   const [granularity, setGranularity] = useState<'day' | 'week' | 'month'>('month');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
+
+  // Timeline / Reading points state (User request: Messpunkte, Zuwachs, Zeitraum)
+  const [chartMode, setChartMode] = useState<'timeline' | 'bars'>('timeline');
+  const [readingsTimeframe, setReadingsTimeframe] = useState<'30d' | '90d' | '180d' | '1y' | 'all'>('1y');
+  const [selectedMeterId, setSelectedMeterId] = useState<number | 'all'>('all');
+  const [showAllIntervals, setShowAllIntervals] = useState<boolean>(false);
 
   // Simulator state: hypothetical savings percentage
   const [simSavingsPct, setSimSavingsPct] = useState<number>(10);
@@ -97,10 +112,11 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
     setLoading(true);
     setError(null);
     try {
-      const [analyticsRes, contractsRes, metersRes] = await Promise.all([
+      const [analyticsRes, contractsRes, metersRes, readingsRes] = await Promise.all([
         api.getDashboardAnalytics(timeframe, granularity, customStart, customEnd),
         api.getContracts(),
-        api.getMeters()
+        api.getMeters(),
+        api.getReadings(undefined, category, 500)
       ]);
 
       setData(analyticsRes);
@@ -113,7 +129,9 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
       }
       setContracts(cMap);
 
-      setMeters(metersRes.filter((m) => m.category === category));
+      const filteredMeters = metersRes.filter((m) => m.category === category);
+      setMeters(filteredMeters);
+      setReadings(readingsRes);
     } catch (err: any) {
       setError(err.message || 'Fehler beim Laden der Detaildaten.');
     } finally {
@@ -193,6 +211,207 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
   // Simulation calculation
   const simSavedUnits = Math.round(projectedConsumption * (simSavingsPct / 100));
   const simSavedEuros = Math.round(simSavedUnits * unitPrice);
+
+  // Meter lookup map
+  const meterMap = useMemo(() => {
+    const map = new Map<number, Meter>();
+    meters.forEach((m) => map.set(m.id, m));
+    return map;
+  }, [meters]);
+
+  // Determine active meter for timeline / chart
+  const effectiveMeterId = useMemo(() => {
+    if (selectedMeterId !== 'all') return selectedMeterId;
+    if (meters.length === 1) return meters[0].id;
+    let bestMeterId = meters[0]?.id;
+    let maxCount = -1;
+    meters.forEach((m) => {
+      const count = readings.filter((r) => r.meter_id === m.id).length;
+      if (count > maxCount) {
+        maxCount = count;
+        bestMeterId = m.id;
+      }
+    });
+    return bestMeterId;
+  }, [selectedMeterId, meters, readings]);
+
+  // Calculate Intervals (User request: die letzten 3 Zählerwerte und Verbrauch & Kosten dazwischen)
+  const readingIntervals = useMemo(() => {
+    const dailyBaseFee = baseFeeMonthly / 30.4;
+    const targetMeters = selectedMeterId === 'all'
+      ? meters
+      : meters.filter((m) => m.id === selectedMeterId);
+
+    const allIntervals: Array<{
+      id: string;
+      meterId: number;
+      meterName: string;
+      meterNumber?: string;
+      startDate: string;
+      endDate: string;
+      startDateFormatted: string;
+      endDateFormatted: string;
+      startValue: number;
+      endValue: number;
+      delta: number;
+      durationDays: number;
+      dailyConsumption: number;
+      weeklyConsumption: number;
+      monthlyConsumption: number;
+      dailyCost: number;
+      weeklyCost: number;
+      monthlyCost: number;
+      totalCost: number;
+      trendDailyPct?: number;
+      notes?: string | null;
+      imagePath?: string | null;
+    }> = [];
+
+    targetMeters.forEach((m) => {
+      const mReadings = readings
+        .filter((r) => r.meter_id === m.id)
+        .sort((a, b) => new Date(a.reading_date).getTime() - new Date(b.reading_date).getTime());
+
+      if (mReadings.length < 2) return;
+
+      const meterIntervals: typeof allIntervals = [];
+
+      for (let i = 1; i < mReadings.length; i++) {
+        const prev = mReadings[i - 1];
+        const curr = mReadings[i];
+        const startMs = new Date(prev.reading_date).getTime();
+        const endMs = new Date(curr.reading_date).getTime();
+        const durationDays = Math.max(1, Math.round((endMs - startMs) / (1000 * 60 * 60 * 24)));
+        const delta = Math.max(0, curr.reading_value - prev.reading_value);
+        const dailyConsumption = delta / durationDays;
+        const weeklyConsumption = dailyConsumption * 7;
+        const monthlyConsumption = dailyConsumption * 30.4;
+
+        const dailyCost = (dailyConsumption * unitPrice) + dailyBaseFee;
+        const weeklyCost = dailyCost * 7;
+        const monthlyCost = dailyCost * 30.4;
+        const totalCost = (delta * unitPrice) + (dailyBaseFee * durationDays);
+
+        meterIntervals.push({
+          id: `${m.id}-${curr.id}`,
+          meterId: m.id,
+          meterName: m.name,
+          meterNumber: m.meter_number,
+          startDate: prev.reading_date,
+          endDate: curr.reading_date,
+          startDateFormatted: formatDate(prev.reading_date),
+          endDateFormatted: formatDate(curr.reading_date),
+          startValue: prev.reading_value,
+          endValue: curr.reading_value,
+          delta,
+          durationDays,
+          dailyConsumption,
+          weeklyConsumption,
+          monthlyConsumption,
+          dailyCost,
+          weeklyCost,
+          monthlyCost,
+          totalCost,
+          notes: curr.notes,
+          imagePath: curr.image_path
+        });
+      }
+
+      // Calculate trend compared to previous interval
+      for (let k = 1; k < meterIntervals.length; k++) {
+        const prevInterval = meterIntervals[k - 1];
+        const currInterval = meterIntervals[k];
+        if (prevInterval.dailyConsumption > 0) {
+          currInterval.trendDailyPct =
+            ((currInterval.dailyConsumption - prevInterval.dailyConsumption) /
+              prevInterval.dailyConsumption) *
+            100;
+        }
+      }
+
+      allIntervals.push(...meterIntervals);
+    });
+
+    // Sort descending by endDate (newest first)
+    return allIntervals.sort(
+      (a, b) => new Date(b.endDate).getTime() - new Date(a.endDate).getTime()
+    );
+  }, [readings, meters, selectedMeterId, unitPrice, baseFeeMonthly]);
+
+  // Calculate timeline chart data with measurement points & deltas
+  const timelineChartData = useMemo(() => {
+    const dailyBaseFee = baseFeeMonthly / 30.4;
+    const targetMeterId = effectiveMeterId;
+    if (!targetMeterId) return [];
+
+    const mReadings = readings
+      .filter((r) => r.meter_id === targetMeterId)
+      .sort((a, b) => new Date(a.reading_date).getTime() - new Date(b.reading_date).getTime());
+
+    if (mReadings.length === 0) return [];
+
+    // Annotate every reading with delta to previous
+    const annotated = mReadings.map((r, i) => {
+      let delta = 0;
+      let durationDays = 0;
+      let dailyRate = 0;
+      let weeklyRate = 0;
+      let monthlyRate = 0;
+      let deltaCost = 0;
+
+      if (i > 0) {
+        const prev = mReadings[i - 1];
+        const startMs = new Date(prev.reading_date).getTime();
+        const endMs = new Date(r.reading_date).getTime();
+        durationDays = Math.max(1, Math.round((endMs - startMs) / (1000 * 60 * 60 * 24)));
+        delta = Math.max(0, r.reading_value - prev.reading_value);
+        dailyRate = delta / durationDays;
+        weeklyRate = dailyRate * 7;
+        monthlyRate = dailyRate * 30.4;
+        deltaCost = (delta * unitPrice) + (dailyBaseFee * durationDays);
+      }
+
+      const d = new Date(r.reading_date);
+      const displayDate = d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' });
+
+      return {
+        id: r.id,
+        rawDate: r.reading_date,
+        date: displayDate,
+        fullDate: formatDateTime(r.reading_date),
+        reading_value: r.reading_value,
+        delta,
+        durationDays,
+        dailyRate,
+        weeklyRate,
+        monthlyRate,
+        deltaCost,
+        notes: r.notes,
+        meterName: meterMap.get(r.meter_id)?.name || ''
+      };
+    });
+
+    // Now filter by readingsTimeframe
+    const nowMs = new Date().getTime();
+    let cutoffMs = 0;
+    if (readingsTimeframe === '30d') cutoffMs = nowMs - 30 * 24 * 60 * 60 * 1000;
+    else if (readingsTimeframe === '90d') cutoffMs = nowMs - 90 * 24 * 60 * 60 * 1000;
+    else if (readingsTimeframe === '180d') cutoffMs = nowMs - 180 * 24 * 60 * 60 * 1000;
+    else if (readingsTimeframe === '1y') cutoffMs = nowMs - 365 * 24 * 60 * 60 * 1000;
+
+    if (cutoffMs > 0) {
+      const filtered = annotated.filter((pt) => new Date(pt.rawDate).getTime() >= cutoffMs);
+      if (filtered.length < 2 && annotated.length >= 2) {
+        const lastBefore = annotated.filter((pt) => new Date(pt.rawDate).getTime() < cutoffMs).pop();
+        if (lastBefore && !filtered.some((f) => f.id === lastBefore.id)) {
+          filtered.unshift(lastBefore);
+        }
+      }
+      return filtered;
+    }
+
+    return annotated;
+  }, [readings, effectiveMeterId, readingsTimeframe, unitPrice, baseFeeMonthly, meterMap]);
 
   // Filter history points specifically for this category
   const historyData = (data?.history || []).map((pt) => {
@@ -801,114 +1020,632 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
         </div>
       )}
 
-      {/* Main Consumption Chart Section */}
-      <div className="glass-card rounded-2xl p-5 border border-slate-800 space-y-4">
+      {/* Recent Meter Readings & Interval Analysis Card (User Request) */}
+      <div className="glass-card rounded-2xl p-5 border border-indigo-500/30 bg-indigo-950/10 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <h2 className="text-base font-bold text-white flex items-center space-x-2">
-              <span>Exklusiver Verbrauchsverlauf für {label}</span>
-            </h2>
-            <p className="text-xs text-slate-400">
-              Historische Messwerte vs. hochgerechnete Prognose bis zum Jahresende
-            </p>
+          <div className="flex items-center space-x-2.5">
+            <div className="p-2 rounded-xl bg-indigo-500/20 border border-indigo-500/40 text-indigo-400">
+              <Clock className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center space-x-2">
+                <h2 className="text-base font-bold text-white">
+                  Letzte Zählerstände & Intervall-Analyse
+                </h2>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">
+                  Exakt
+                </span>
+              </div>
+              <p className="text-xs text-slate-400">
+                Tatsächlicher Zwischenverbrauch, Durchschnitte (Tag, Woche, Monat) und exakte Kosten zwischen deinen Ablesungen
+              </p>
+            </div>
           </div>
 
-          {/* Granularity Switcher */}
-          <div className="flex items-center bg-slate-900 rounded-xl p-1 border border-slate-800 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Meter selection if multiple meters */}
+            {meters.length > 1 && (
+              <div className="flex items-center bg-slate-900 rounded-xl p-1 border border-slate-800 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setSelectedMeterId('all')}
+                  className={`px-2.5 py-1 rounded-lg transition-all ${
+                    selectedMeterId === 'all'
+                      ? 'bg-indigo-600 text-white font-semibold'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Alle Zähler
+                </button>
+                {meters.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => setSelectedMeterId(m.id)}
+                    className={`px-2.5 py-1 rounded-lg transition-all ${
+                      selectedMeterId === m.id
+                        ? 'bg-indigo-600 text-white font-semibold'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {m.name}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Quick action to scan meter */}
             <button
-              onClick={() => setGranularity('day')}
-              className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
-                granularity === 'day' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
-              }`}
+              type="button"
+              onClick={onOpenScan}
+              className="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold shadow-sm transition-all flex items-center space-x-1.5"
             >
-              Tag
-            </button>
-            <button
-              onClick={() => setGranularity('week')}
-              className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
-                granularity === 'week' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              Woche
-            </button>
-            <button
-              onClick={() => setGranularity('month')}
-              className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
-                granularity === 'month' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              Monat
+              <Camera className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Neuer Stand</span>
             </button>
           </div>
         </div>
 
-        {/* Chart */}
-        <div className="h-72 w-full pt-2">
-          {historyData.length > 0 ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={historyData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="detailGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={colors.primary} stopOpacity={0.8} />
-                    <stop offset="95%" stopColor={colors.primary} stopOpacity={0.2} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                <XAxis
-                  dataKey="date"
-                  stroke="#64748b"
-                  fontSize={11}
-                  tickLine={false}
-                  tickFormatter={(val) => {
-                    if (granularity === 'month') return val.slice(0, 7);
-                    return val.slice(5);
-                  }}
-                />
-                <YAxis stroke="#64748b" fontSize={11} tickLine={false} />
-                <Tooltip
-                  content={({ active, payload, label }) => {
-                    if (active && payload && payload.length) {
-                      const item = payload[0].payload;
-                      return (
-                        <div className="glass-panel p-3 rounded-xl border border-slate-700 shadow-xl text-xs space-y-1 min-w-[140px]">
-                          <div className="font-semibold text-slate-200 border-b border-slate-700/60 pb-1 flex justify-between items-center">
-                            <span>{item.date}</span>
-                            {item.is_projected && (
-                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300">
-                                Prognose
-                              </span>
+        {/* Intervals List */}
+        {readingIntervals.length > 0 ? (
+          <div className="space-y-3">
+            {(showAllIntervals ? readingIntervals : readingIntervals.slice(0, 3)).map((iv, idx) => {
+              const isLatest = idx === 0;
+              return (
+                <div
+                  key={iv.id}
+                  className={`p-4 rounded-xl border transition-all ${
+                    isLatest
+                      ? 'bg-slate-900/90 border-indigo-500/40 shadow-md ring-1 ring-indigo-500/20'
+                      : 'bg-slate-900/60 border-slate-800/80 hover:border-slate-700'
+                  }`}
+                >
+                  {/* Top Header of Interval */}
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-800/70 pb-2.5 mb-3">
+                    <div className="flex items-center space-x-2">
+                      <span
+                        className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-md ${
+                          isLatest
+                            ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40'
+                            : 'bg-slate-800 text-slate-400'
+                        }`}
+                      >
+                        {isLatest ? 'Neueste Ablesung (Intervall 1)' : `Intervall ${idx + 1}`}
+                      </span>
+                      {meters.length > 1 && (
+                        <span className="text-[11px] font-semibold text-slate-300">
+                          {iv.meterName} {iv.meterNumber ? `(Nr. ${iv.meterNumber})` : ''}
+                        </span>
+                      )}
+                      <span className="text-xs text-slate-400">
+                        {iv.startDateFormatted} <span className="text-slate-600">➔</span> {iv.endDateFormatted}
+                      </span>
+                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700 font-mono">
+                        {iv.durationDays} {iv.durationDays === 1 ? 'Tag' : 'Tage'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center space-x-2 self-start sm:self-auto">
+                      {iv.trendDailyPct !== undefined && (
+                        <span
+                          className={`text-[11px] font-semibold flex items-center px-2 py-0.5 rounded-md ${
+                            iv.trendDailyPct > 2
+                              ? 'bg-amber-500/15 text-amber-300'
+                              : iv.trendDailyPct < -2
+                              ? 'bg-emerald-500/15 text-emerald-300'
+                              : 'bg-slate-800 text-slate-400'
+                          }`}
+                          title={`Vergleich Tagesrate mit vorherigem Intervall: ${formatNumber(iv.trendDailyPct, 1)}%`}
+                        >
+                          {iv.trendDailyPct > 2 ? (
+                            <TrendingUp className="w-3 h-3 mr-1 text-amber-400" />
+                          ) : iv.trendDailyPct < -2 ? (
+                            <TrendingDown className="w-3 h-3 mr-1 text-emerald-400" />
+                          ) : null}
+                          {iv.trendDailyPct > 0 ? `+${formatNumber(iv.trendDailyPct, 1)}%` : `${formatNumber(iv.trendDailyPct, 1)}%`} vs. Vor-Intervall
+                        </span>
+                      )}
+
+                      <span className="text-xs font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
+                        Gesamt: {formatCurrency(iv.totalCost)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Meter Reading Step & Main Metric */}
+                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                    {/* Visual Meter Step */}
+                    <div className="flex items-center space-x-3">
+                      <div className="text-left">
+                        <span className="text-[10px] uppercase tracking-wider text-slate-500 block">Zählerstand Start</span>
+                        <span className="font-mono text-sm font-semibold text-slate-300">
+                          {formatNumber(iv.startValue, 2)} <span className="text-xs text-slate-500">{unit}</span>
+                        </span>
+                      </div>
+
+                      <ArrowRight className="w-4 h-4 text-indigo-400 flex-shrink-0" />
+
+                      <div className="text-left">
+                        <span className="text-[10px] uppercase tracking-wider text-slate-500 block">Zählerstand Ende</span>
+                        <span className="font-mono text-base font-bold text-white">
+                          {formatNumber(iv.endValue, 2)} <span className="text-xs text-indigo-400">{unit}</span>
+                        </span>
+                      </div>
+
+                      {/* Delta Badge */}
+                      <div className="ml-2 pl-3 border-l border-slate-800">
+                        <span className="text-[10px] uppercase tracking-wider text-slate-500 block">Verbrauch im Zeitraum</span>
+                        <span className="font-mono text-base font-extrabold text-sky-400">
+                          +{formatNumber(iv.delta, 2)} {unit}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Breakdown by Day, Week, Month */}
+                    <div className="grid grid-cols-3 gap-2 sm:gap-3 flex-1 max-w-xl">
+                      {/* Per Day */}
+                      <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80 text-center">
+                        <span className="text-[10px] text-slate-400 block font-medium">Ø Pro Tag</span>
+                        <span className="font-mono font-bold text-white text-xs sm:text-sm block">
+                          {formatNumber(iv.dailyConsumption, 2)} {unit}
+                        </span>
+                        <span className="font-mono text-[11px] text-emerald-400 block mt-0.5">
+                          ~{formatCurrency(iv.dailyCost)} / Tag
+                        </span>
+                      </div>
+
+                      {/* Per Week */}
+                      <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80 text-center">
+                        <span className="text-[10px] text-slate-400 block font-medium">Ø Pro Woche</span>
+                        <span className="font-mono font-bold text-white text-xs sm:text-sm block">
+                          {formatNumber(iv.weeklyConsumption, 2)} {unit}
+                        </span>
+                        <span className="font-mono text-[11px] text-emerald-400 block mt-0.5">
+                          ~{formatCurrency(iv.weeklyCost)} / Wo.
+                        </span>
+                      </div>
+
+                      {/* Per Month */}
+                      <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80 text-center">
+                        <span className="text-[10px] text-slate-400 block font-medium">Ø Pro Monat</span>
+                        <span className="font-mono font-bold text-white text-xs sm:text-sm block">
+                          {formatNumber(iv.monthlyConsumption, 2)} {unit}
+                        </span>
+                        <span className="font-mono text-[11px] text-emerald-400 block mt-0.5">
+                          ~{formatCurrency(iv.monthlyCost)} / Mt.
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Notes / Photo indicator */}
+                  {iv.notes && (
+                    <div className="mt-2.5 pt-2 border-t border-slate-800/50 flex items-center space-x-2 text-[11px] text-slate-400 truncate">
+                      <FileText className="w-3.5 h-3.5 text-slate-500 flex-shrink-0" />
+                      <span className="truncate">{iv.notes}</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Toggle Show All / Show 3 */}
+            {readingIntervals.length > 3 && (
+              <div className="text-center pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowAllIntervals(!showAllIntervals)}
+                  className="px-4 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-xs font-semibold text-slate-300 hover:text-white border border-slate-800 transition-all inline-flex items-center space-x-1.5"
+                >
+                  {showAllIntervals ? (
+                    <>
+                      <ChevronUp className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>Auf letzte 3 Intervalle reduzieren</span>
+                    </>
+                  ) : (
+                    <>
+                      <ChevronDown className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>Alle {readingIntervals.length} Intervalle anzeigen (+{readingIntervals.length - 3} ältere)</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="p-6 rounded-xl bg-slate-900/40 border border-dashed border-slate-800 text-center space-y-2">
+            <Info className="w-6 h-6 text-slate-500 mx-auto" />
+            <p className="text-xs text-slate-300 font-medium">
+              Noch nicht genügend Ablesungen für Intervall-Berechnungen vorhanden.
+            </p>
+            <p className="text-[11px] text-slate-500">
+              Es werden mindestens 2 Zählerstände benötigt, um den Zwischenverbrauch, Durchschnittswerte pro Tag/Woche/Monat und Kosten zu ermitteln.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Main Consumption & Measurement Points Chart Section */}
+      <div className="glass-card rounded-2xl p-5 border border-slate-800 space-y-4">
+        {/* Header & Mode Switcher */}
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 border-b border-slate-800/80 pb-3">
+          <div>
+            <div className="flex items-center space-x-2">
+              <h2 className="text-base font-bold text-white flex items-center space-x-2">
+                <span>Exklusiver Verbrauchs- & Messverlauf für {label}</span>
+              </h2>
+            </div>
+            <p className="text-xs text-slate-400 mt-0.5">
+              {chartMode === 'timeline'
+                ? 'Reale Zählerpunkte, kontinuierlicher Stand und Zuwachs (+Δ) seit letzter Ablesung'
+                : 'Historischer aggregierter Verbrauch vs. hochgerechnete Prognose bis zum Jahresende'}
+            </p>
+          </div>
+
+          {/* Mode Switcher Tabs */}
+          <div className="flex items-center bg-slate-900 rounded-xl p-1 border border-slate-800 text-xs self-start md:self-auto">
+            <button
+              type="button"
+              onClick={() => setChartMode('timeline')}
+              className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg font-medium transition-all ${
+                chartMode === 'timeline'
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <LineChart className="w-3.5 h-3.5" />
+              <span>Reale Zählerpunkte & Zuwachs</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setChartMode('bars')}
+              className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg font-medium transition-all ${
+                chartMode === 'bars'
+                  ? 'bg-slate-800 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <BarChart3 className="w-3.5 h-3.5" />
+              <span>Verbrauchs-Balken & Prognose</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Sub-Controls: Timeframe, Meter filter, Granularity */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-1 text-xs">
+          {chartMode === 'timeline' ? (
+            <>
+              {/* Zeitraum einstellen (User Request!) */}
+              <div className="flex items-center space-x-2">
+                <span className="text-slate-400 text-[11px] flex items-center space-x-1">
+                  <CalendarRange className="w-3 h-3 text-slate-500" />
+                  <span>Zeitraum:</span>
+                </span>
+                <div className="flex items-center bg-slate-900/90 rounded-lg p-0.5 border border-slate-800">
+                  {(['30d', '90d', '180d', '1y', 'all'] as const).map((tf) => (
+                    <button
+                      key={tf}
+                      type="button"
+                      onClick={() => setReadingsTimeframe(tf)}
+                      className={`px-2.5 py-1 rounded-md font-medium text-[11px] transition-all ${
+                        readingsTimeframe === tf
+                          ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 font-semibold'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {tf === '30d'
+                        ? '30 Tage'
+                        : tf === '90d'
+                        ? '90 Tage'
+                        : tf === '180d'
+                        ? '180 Tage'
+                        : tf === '1y'
+                        ? '1 Jahr'
+                        : 'Alle'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Meter selector if multiple meters */}
+              {meters.length > 1 && (
+                <div className="flex items-center space-x-2">
+                  <span className="text-slate-400 text-[11px]">Zähler:</span>
+                  <div className="flex items-center bg-slate-900 rounded-lg p-0.5 border border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedMeterId('all')}
+                      className={`px-2 py-0.5 rounded text-[11px] ${
+                        selectedMeterId === 'all'
+                          ? 'bg-indigo-600 text-white font-medium'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Alle
+                    </button>
+                    {meters.map((m) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => setSelectedMeterId(m.id)}
+                        className={`px-2 py-0.5 rounded text-[11px] ${
+                          selectedMeterId === m.id
+                            ? 'bg-indigo-600 text-white font-medium'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        {m.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Legend Badges */}
+              <div className="flex items-center space-x-3 text-[11px]">
+                <span className="flex items-center space-x-1.5 text-slate-300">
+                  <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: colors.primary }} />
+                  <span>Zählerstand ({unit})</span>
+                </span>
+                <span className="flex items-center space-x-1.5 text-sky-300">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-sky-400 inline-block" />
+                  <span>Zuwachs (+{unit}) seit letzter Ablesung</span>
+                </span>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* Granularity Switcher */}
+              <div className="flex items-center space-x-2">
+                <span className="text-slate-400 text-[11px]">Auflösung:</span>
+                <div className="flex items-center bg-slate-900 rounded-xl p-1 border border-slate-800 text-xs">
+                  <button
+                    onClick={() => setGranularity('day')}
+                    className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
+                      granularity === 'day' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Tag
+                  </button>
+                  <button
+                    onClick={() => setGranularity('week')}
+                    className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
+                      granularity === 'week' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Woche
+                  </button>
+                  <button
+                    onClick={() => setGranularity('month')}
+                    className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
+                      granularity === 'month' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Monat
+                  </button>
+                </div>
+              </div>
+
+              {/* Legend Badges for Bars */}
+              <div className="flex items-center space-x-3 text-[11px]">
+                <span className="flex items-center space-x-1.5 text-slate-300">
+                  <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ backgroundColor: colors.primary }} />
+                  <span>Gemessener Verbrauch</span>
+                </span>
+                <span className="flex items-center space-x-1.5 text-indigo-300">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-indigo-500/60 inline-block" />
+                  <span>Prognostizierter Verbrauch</span>
+                </span>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Chart Rendering */}
+        <div className="h-80 w-full pt-2">
+          {chartMode === 'timeline' ? (
+            timelineChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart
+                  data={timelineChartData}
+                  margin={{ top: 15, right: 25, left: 10, bottom: 5 }}
+                >
+                  <defs>
+                    <linearGradient id="deltaBarGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#38bdf8" stopOpacity={0.8} />
+                      <stop offset="95%" stopColor="#38bdf8" stopOpacity={0.2} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                  <XAxis
+                    dataKey="date"
+                    stroke="#64748b"
+                    fontSize={11}
+                    tickLine={false}
+                  />
+                  {/* Left Axis: Total Odometer Reading */}
+                  <YAxis
+                    yAxisId="odometer"
+                    orientation="left"
+                    stroke="#94a3b8"
+                    fontSize={11}
+                    tickLine={false}
+                    domain={['dataMin - 10', 'dataMax + 10']}
+                    tickFormatter={(val) => formatNumber(val, 0)}
+                  />
+                  {/* Right Axis: Delta since previous reading */}
+                  <YAxis
+                    yAxisId="delta"
+                    orientation="right"
+                    stroke="#38bdf8"
+                    fontSize={11}
+                    tickLine={false}
+                    tickFormatter={(val) => `+${formatNumber(val, 0)}`}
+                  />
+                  <Tooltip
+                    content={({ active, payload }) => {
+                      if (active && payload && payload.length) {
+                        const item = payload[0].payload;
+                        return (
+                          <div className="glass-panel p-3.5 rounded-xl border border-slate-700 shadow-2xl text-xs space-y-2 min-w-[220px]">
+                            <div className="border-b border-slate-700/60 pb-1.5 flex justify-between items-center">
+                              <span className="font-semibold text-slate-200">{item.fullDate}</span>
+                              {item.meterName && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">
+                                  {item.meterName}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="space-y-1">
+                              <div className="flex justify-between items-center text-slate-300">
+                                <span>Zählerstand:</span>
+                                <span className="font-mono font-bold text-white text-sm">
+                                  {formatNumber(item.reading_value, 2)} {unit}
+                                </span>
+                              </div>
+
+                              {item.durationDays > 0 ? (
+                                <>
+                                  <div className="flex justify-between items-center text-sky-300 pt-1 border-t border-slate-800">
+                                    <span>Zuwachs seit letztem Mal:</span>
+                                    <span className="font-mono font-extrabold text-sky-400">
+                                      +{formatNumber(item.delta, 2)} {unit}
+                                    </span>
+                                  </div>
+
+                                  <div className="text-[10px] text-slate-400 flex justify-between">
+                                    <span>Zeitraum:</span>
+                                    <span>{item.durationDays} Tage</span>
+                                  </div>
+
+                                  <div className="flex justify-between items-center text-slate-300 text-[11px]">
+                                    <span>Ø Rate pro Tag:</span>
+                                    <span className="font-mono text-white">
+                                      {formatNumber(item.dailyRate, 2)} {unit}/Tag
+                                    </span>
+                                  </div>
+
+                                  <div className="flex justify-between items-center text-slate-400 text-[11px]">
+                                    <span>Kosten im Zeitraum:</span>
+                                    <span className="font-mono font-semibold text-emerald-400">
+                                      {formatCurrency(item.deltaCost)}
+                                    </span>
+                                  </div>
+                                </>
+                              ) : (
+                                <div className="text-[11px] text-slate-500 pt-1 border-t border-slate-800">
+                                  Erste erfasste Ablesung (Basiswert)
+                                </div>
+                              )}
+                            </div>
+
+                            {item.notes && (
+                              <div className="text-[10px] text-slate-400 border-t border-slate-800/60 pt-1.5 truncate max-w-xs">
+                                {item.notes}
+                              </div>
                             )}
                           </div>
-                          <div className="flex justify-between items-center text-slate-300">
-                            <span>Verbrauch:</span>
-                            <span className="font-mono font-bold text-white">
-                              {formatNumber(item.consumption, 2)} {unit}
-                            </span>
-                          </div>
-                          <div className="flex justify-between items-center text-slate-400 text-[11px]">
-                            <span>Kosten:</span>
-                            <span className="font-mono text-emerald-400">
-                              {formatCurrency(item.cost)}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    }
-                    return null;
-                  }}
-                />
-                <Bar
-                  dataKey="consumption"
-                  fill="url(#detailGradient)"
-                  radius={[4, 4, 0, 0]}
-                  name={label}
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
+                        );
+                      }
+                      return null;
+                    }}
+                  />
+                  {/* Delta Bars */}
+                  <Bar
+                    yAxisId="delta"
+                    dataKey="delta"
+                    fill="url(#deltaBarGrad)"
+                    radius={[4, 4, 0, 0]}
+                    barSize={28}
+                    name={`Zuwachs (+${unit})`}
+                  />
+                  {/* Odometer Reading Line with distinct points */}
+                  <Line
+                    yAxisId="odometer"
+                    type="monotone"
+                    dataKey="reading_value"
+                    stroke={colors.primary}
+                    strokeWidth={3}
+                    dot={{ r: 5, fill: colors.primary, stroke: '#0f172a', strokeWidth: 2 }}
+                    activeDot={{ r: 7, fill: '#fff', stroke: colors.primary, strokeWidth: 3 }}
+                    name={`Zählerstand (${unit})`}
+                  />
+                </ComposedChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex items-center justify-center text-slate-500 text-xs">
+                Keine Ablesungen für den ausgewählten Zeitraum vorhanden.
+              </div>
+            )
           ) : (
-            <div className="h-full flex items-center justify-center text-slate-500 text-xs">
-              Keine Verbrauchsdaten für diesen Zeitraum verfügbar.
-            </div>
+            // Aggregated Bars view
+            historyData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={historyData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="detailGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor={colors.primary} stopOpacity={0.8} />
+                      <stop offset="95%" stopColor={colors.primary} stopOpacity={0.2} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                  <XAxis
+                    dataKey="date"
+                    stroke="#64748b"
+                    fontSize={11}
+                    tickLine={false}
+                    tickFormatter={(val) => {
+                      if (granularity === 'month') return val.slice(0, 7);
+                      return val.slice(5);
+                    }}
+                  />
+                  <YAxis stroke="#64748b" fontSize={11} tickLine={false} />
+                  <Tooltip
+                    content={({ active, payload }) => {
+                      if (active && payload && payload.length) {
+                        const item = payload[0].payload;
+                        return (
+                          <div className="glass-panel p-3 rounded-xl border border-slate-700 shadow-xl text-xs space-y-1 min-w-[140px]">
+                            <div className="font-semibold text-slate-200 border-b border-slate-700/60 pb-1 flex justify-between items-center">
+                              <span>{item.date}</span>
+                              {item.is_projected && (
+                                <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300">
+                                  Prognose
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex justify-between items-center text-slate-300">
+                              <span>Verbrauch:</span>
+                              <span className="font-mono font-bold text-white">
+                                {formatNumber(item.consumption, 2)} {unit}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center text-slate-400 text-[11px]">
+                              <span>Kosten:</span>
+                              <span className="font-mono text-emerald-400">
+                                {formatCurrency(item.cost)}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      }
+                      return null;
+                    }}
+                  />
+                  <Bar
+                    dataKey="consumption"
+                    fill="url(#detailGradient)"
+                    radius={[4, 4, 0, 0]}
+                    name={label}
+                  />
+                </ComposedChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex items-center justify-center text-slate-500 text-xs">
+                Keine Verbrauchsdaten für diesen Zeitraum verfügbar.
+              </div>
+            )
           )}
         </div>
       </div>

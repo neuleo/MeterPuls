@@ -70,9 +70,25 @@ export const api = {
   },
 
   // Readings
-  async getReadings(meterId?: number, limit = 100): Promise<Reading[]> {
-    const url = meterId ? `${API_BASE}/readings?meter_id=${meterId}&limit=${limit}` : `${API_BASE}/readings?limit=${limit}`;
-    const res = await fetch(url);
+  async getReadings(
+    meterId?: number,
+    categoryOrLimit?: MeterCategory | number,
+    limitParam = 200
+  ): Promise<Reading[]> {
+    let category: MeterCategory | undefined;
+    let limit = limitParam;
+
+    if (typeof categoryOrLimit === 'number') {
+      limit = categoryOrLimit;
+    } else if (typeof categoryOrLimit === 'string') {
+      category = categoryOrLimit;
+    }
+
+    const params = new URLSearchParams();
+    if (meterId) params.append('meter_id', meterId.toString());
+    if (category) params.append('category', category);
+    params.append('limit', limit.toString());
+    const res = await fetch(`${API_BASE}/readings?${params.toString()}`);
     return handleResponse<Reading[]>(res);
   },
 

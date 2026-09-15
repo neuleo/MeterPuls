@@ -16,12 +16,15 @@ os.makedirs(UPLOADS_DIR, exist_ok=True)
 @router.get("", response_model=List[ReadingResponse])
 def get_readings(
     meter_id: Optional[int] = Query(None),
+    category: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db)
 ):
-    query = db.query(Reading)
+    query = db.query(Reading).join(Meter, Reading.meter_id == Meter.id)
     if meter_id is not None:
         query = query.filter(Reading.meter_id == meter_id)
+    if category is not None:
+        query = query.filter(Meter.category == category)
     readings = query.order_by(Reading.reading_date.desc()).limit(limit).all()
     return readings
 
