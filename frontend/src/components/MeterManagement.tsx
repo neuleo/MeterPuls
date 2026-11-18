@@ -8,6 +8,7 @@ import {
   Edit2,
   Trash2,
   History,
+  Camera,
   MapPin,
   Barcode,
   Calendar,
@@ -21,12 +22,14 @@ interface MeterManagementProps {
   meters: Meter[];
   onRefresh: () => void;
   onOpenHistory: (meter: Meter) => void;
+  onOpenScan?: (meter: Meter) => void;
 }
 
 export const MeterManagement: React.FC<MeterManagementProps> = ({
   meters,
   onRefresh,
-  onOpenHistory
+  onOpenHistory,
+  onOpenScan
 }) => {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingMeter, setEditingMeter] = useState<Meter | null>(null);
@@ -249,13 +252,24 @@ export const MeterManagement: React.FC<MeterManagementProps> = ({
                     {/* Bottom Action */}
                     <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs">
                       <span className="text-slate-500">{meter.reading_count} Ablesungen</span>
-                      <button
-                        onClick={() => onOpenHistory(meter)}
-                        className="flex items-center space-x-1 text-emerald-400 hover:text-emerald-300 font-medium transition-colors"
-                      >
-                        <History className="w-3.5 h-3.5" />
-                        <span>Historie anzeigen</span>
-                      </button>
+                      <div className="flex items-center space-x-3">
+                        {onOpenScan && (
+                          <button
+                            onClick={() => onOpenScan(meter)}
+                            className="flex items-center space-x-1 text-emerald-400 hover:text-emerald-300 font-medium transition-colors"
+                          >
+                            <Camera className="w-3.5 h-3.5" />
+                            <span>Stand erfassen</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => onOpenHistory(meter)}
+                          className="flex items-center space-x-1 text-emerald-400 hover:text-emerald-300 font-medium transition-colors"
+                        >
+                          <History className="w-3.5 h-3.5" />
+                          <span>Historie</span>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}

@@ -20,6 +20,7 @@ export interface Reading {
   reading_date: string;
   image_path?: string | null;
   notes?: string | null;
+  client_ref?: string | null;
   created_at: string;
 }
 
@@ -142,4 +143,92 @@ export interface ExportDataResponse {
   csv_readings: string;
   csv_monthly: string;
   summary_text: string;
+}
+
+export type ContractStatus = 'active' | 'planned' | 'ended' | 'gap';
+
+export interface ContractPrice {
+  id: number;
+  contract_id: number;
+  valid_from: string;
+  base_fee_monthly: number;
+  unit_price: number;
+  monthly_payment: number;
+}
+
+export interface ContractDetail extends Contract {
+  status: ContractStatus;
+  prices: ContractPrice[];
+}
+
+export interface ContractListResponse {
+  active: ContractDetail | null;
+  next_change: ContractDetail | null;
+  history: ContractDetail[];
+  gaps: Array<{ start_date: string; end_date: string }>;
+}
+
+export interface ContractPlanResult {
+  ok: boolean;
+  message: string;
+  contract_id?: number;
+}
+
+export interface CostDay {
+  date: string;
+  consumption: number;
+  energy_cost: number;
+  base_cost: number;
+  payment: number;
+  total_cost: number;
+  contract_id: number | null;
+  price_id: number | null;
+  unit_price: number;
+  has_tariff: boolean;
+  is_gap: boolean;
+  is_estimated: boolean;
+  is_projected: boolean;
+  unit_mismatch?: boolean;
+}
+
+export interface CostPeriod {
+  contract_id: number | null;
+  start_date: string;
+  end_date: string;
+  status: ContractStatus;
+  provider_name?: string | null;
+  tariff_name?: string | null;
+  unit_price: number;
+  base_fee_monthly: number;
+}
+
+export interface CostTotalsBlock {
+  consumption: number;
+  energy_cost: number;
+  base_cost: number;
+  cost: number;
+  payment: number;
+  balance: number;
+  bonus: number;
+  cost_with_bonus: number;
+}
+
+export interface CostBreakdown {
+  category: MeterCategory;
+  unit: string;
+  start_date: string;
+  end_date: string;
+  eval_date: string;
+  days: CostDay[];
+  periods: CostPeriod[];
+  gaps: CostPeriod[];
+  totals: {
+    actual: CostTotalsBlock;
+    forecast: CostTotalsBlock;
+    all: CostTotalsBlock;
+  };
+  has_gap: boolean;
+  unit_mismatch?: boolean;
+  meter_unit?: string;
+  price_unit?: string;
 }

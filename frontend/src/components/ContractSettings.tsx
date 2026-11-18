@@ -1,513 +1,499 @@
 import React, { useState, useEffect } from 'react';
 import {
-  FileText,
-  Save,
-  CheckCircle2,
-  AlertCircle,
-  Zap,
-  Flame,
-  Droplets,
-  HelpCircle,
-  Calculator,
-  Camera,
-  Sparkles,
-  Gift,
-  Building,
-  Tag
+  FileText, Save, CheckCircle2, AlertCircle, Zap, Flame, Droplets,
+  Camera, Sparkles, Gift, Building, Tag, Calendar, History, Plus,
+  RotateCcw, ChevronDown, ChevronUp, Clock, ArrowRight
 } from 'lucide-react';
-import { Contract, MeterCategory, AIContractScanResult } from '../types';
-import { api } from '../api';
-import { formatCurrency, getCategoryColor, getCategoryLabel } from '../utils/formatters';
+import {
+  Contract, ContractListResponse, MeterCategory, AIContractScanResult, ContractDetail
+} from '../types';
+import { contractApi, api } from '../api';
+import { formatCurrency, getCategoryLabel } from '../utils/formatters';
 import { ScanContractModal } from './ScanContractModal';
 
+const CATEGORIES: MeterCategory[] = ['electricity', 'gas', 'water'];
+
+type FormMode = 'successor' | 'price' | 'edit' | null;
+
+interface SuccessorDraft {
+  provider_name: string;
+  tariff_name: string;
+  start_date: string;
+  end_date: string;
+  base_fee_monthly: string;
+  unit_price: string;
+  monthly_payment: string;
+  bonus_one_time: string;
+  bonus_notes: string;
+  warmwater_source: string;
+  heating_start_month: number;
+  heating_end_month: number;
+  close_predecessor: boolean;
+  confirm_backdate: boolean;
+}
+
+const emptySuccessor = (): SuccessorDraft => ({
+  provider_name: '',
+  tariff_name: '',
+  start_date: '',
+  end_date: '',
+  base_fee_monthly: '',
+  unit_price: '',
+  monthly_payment: '',
+  bonus_one_time: '0',
+  bonus_notes: '',
+  warmwater_source: 'electricity',
+  heating_start_month: 10,
+  heating_end_month: 4,
+  close_predecessor: true,
+  confirm_backdate: false
+});
+
 export const ContractSettings: React.FC = () => {
-  const [contracts, setContracts] = useState<Record<MeterCategory, Partial<Contract>>>({
-    electricity: {
-      category: 'electricity',
-      provider_name: '',
-      tariff_name: '',
-      start_date: new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0, 10),
-      end_date: new Date(new Date().getFullYear(), 11, 31).toISOString().slice(0, 10),
-      base_fee_monthly: 11.90,
-      unit_price: 0.325,
-      monthly_payment: 85.0,
-      bonus_one_time: 0,
-      bonus_notes: ''
-    },
-    gas: {
-      category: 'gas',
-      provider_name: '',
-      tariff_name: '',
-      start_date: new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0, 10),
-      end_date: new Date(new Date().getFullYear(), 11, 31).toISOString().slice(0, 10),
-      base_fee_monthly: 14.50,
-      unit_price: 0.118,
-      monthly_payment: 130.0,
-      bonus_one_time: 0,
-      bonus_notes: '',
-      warmwater_source: 'electricity',
-      heating_start_month: 10,
-      heating_end_month: 4
-    },
-    water: {
-      category: 'water',
-      provider_name: '',
-      tariff_name: '',
-      start_date: new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0, 10),
-      end_date: new Date(new Date().getFullYear(), 11, 31).toISOString().slice(0, 10),
-      base_fee_monthly: 6.50,
-      unit_price: 4.20,
-      monthly_payment: 30.0,
-      bonus_one_time: 0,
-      bonus_notes: ''
-    }
-  });
-
-  const [isScanModalOpen, setIsScanModalOpen] = useState(false);
-  const [savingCategory, setSavingCategory] = useState<MeterCategory | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [lists, setLists] = useState<Partial<Record<MeterCategory, ContractListResponse>>>({});
+  const [scanOpen, setScanOpen] = useState(false);
+  const [mode, setMode] = useState<Partial<Record<MeterCategory, FormMode>>>({});
+  const [successor, setSuccessor] = useState<Partial<Record<MeterCategory, SuccessorDraft>>>({});
+  const [priceDraft, setPriceDraft] = useState<Record<string, any>>({});
+  const [editDraft, setEditDraft] = useState<Partial<Record<MeterCategory, Partial<Contract>>>>({});
+  const [preview, setPreview] = useState<Partial<Record<MeterCategory, string>>>({});
+  const [openHistory, setOpenHistory] = useState<Partial<Record<MeterCategory, boolean>>>({});
+  const [saving, setSaving] = useState<MeterCategory | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [scanned, setScanned] = useState<AIContractScanResult | null>(null);
 
-  useEffect(() => {
-    loadContracts();
-  }, []);
+  useEffect(() => { loadAll(); }, []);
 
-  const loadContracts = async () => {
-    try {
-      const data = await api.getContracts();
-      if (data && data.length > 0) {
-        const map: any = { ...contracts };
-        data.forEach((c) => {
-          map[c.category] = {
-            ...c,
-            start_date: c.start_date.slice(0, 10),
-            end_date: c.end_date.slice(0, 10),
-            warmwater_source: c.warmwater_source || 'electricity',
-            heating_start_month: c.heating_start_month || 10,
-            heating_end_month: c.heating_end_month || 4
-          };
-        });
-        setContracts(map);
+  const loadAll = async () => {
+    const results = await Promise.all(CATEGORIES.map((c) => contractApi.list(c)));
+    const map: Partial<Record<MeterCategory, ContractListResponse>> = {};
+    CATEGORIES.forEach((c, i) => { map[c] = results[i]; });
+    setLists(map);
+    results.forEach((list) => {
+      const cat = list.active?.category;
+      if (cat) {
+        setEditDraft((prev) => ({ ...prev, [cat]: { ...list.active } }));
       }
-    } catch (err: any) {
-      console.error('Fehler beim Laden der Verträge:', err);
-    }
+    });
   };
 
-  const handleFieldChange = (cat: MeterCategory, field: keyof Contract, val: any) => {
-    setContracts((prev) => ({
-      ...prev,
-      [cat]: {
-        ...prev[cat],
-        [field]: val
-      }
-    }));
-  };
-
-  const saveContract = async (cat: MeterCategory, customData?: Partial<Contract>) => {
-    setSavingCategory(cat);
+  const openForm = (cat: MeterCategory, nextMode: FormMode) => {
     setError(null);
-    setSuccessMsg(null);
-    try {
-      const c = customData || contracts[cat];
-      const saved = await api.upsertContract({
-        category: cat,
-        provider_name: c.provider_name || null,
-        tariff_name: c.tariff_name || null,
-        start_date: c.start_date || new Date().toISOString().slice(0, 10),
-        end_date: c.end_date || new Date().toISOString().slice(0, 10),
-        base_fee_monthly: Number(c.base_fee_monthly) || 0,
-        unit_price: Number(c.unit_price) || 0,
-        monthly_payment: Number(c.monthly_payment) || 0,
-        bonus_one_time: Number(c.bonus_one_time) || 0,
-        bonus_notes: c.bonus_notes || null,
-        warmwater_source: c.warmwater_source || 'electricity',
-        heating_start_month: c.heating_start_month || 10,
-        heating_end_month: c.heating_end_month || 4
-      });
-
-      setContracts((prev) => ({
+    setMessage(null);
+    const active = lists[cat]?.active;
+    setMode((prev) => ({ ...prev, [cat]: nextMode }));
+    if (nextMode === 'successor') {
+      const draft = successor[cat] || emptySuccessor();
+      const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+      setSuccessor((prev) => ({
         ...prev,
         [cat]: {
-          ...saved,
-          start_date: saved.start_date.slice(0, 10),
-          end_date: saved.end_date.slice(0, 10)
+          ...draft,
+          start_date: draft.start_date || tomorrow,
+          provider_name: draft.provider_name || active?.provider_name || '',
+          base_fee_monthly: draft.base_fee_monthly || String(active?.base_fee_monthly ?? ''),
+          unit_price: draft.unit_price || String(active?.unit_price ?? ''),
+          monthly_payment: draft.monthly_payment || String(active?.monthly_payment ?? ''),
+          warmwater_source: active?.warmwater_source || draft.warmwater_source,
+          heating_start_month: active?.heating_start_month || draft.heating_start_month,
+          heating_end_month: active?.heating_end_month || draft.heating_end_month
         }
       }));
-
-      setSuccessMsg(`Vertrag für ${getCategoryLabel(cat)} erfolgreich gespeichert.`);
-      setTimeout(() => setSuccessMsg(null), 4500);
-    } catch (err: any) {
-      setError(err.message || `Fehler beim Speichern von ${getCategoryLabel(cat)}.`);
-    } finally {
-      setSavingCategory(null);
+      setPreview((prev) => ({ ...prev, [cat]: '' }));
+    }
+    if (nextMode === 'price' && active) {
+      const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+      setPriceDraft((prev) => ({
+        ...prev,
+        [cat]: {
+          contract_id: active.id,
+          valid_from: tomorrow,
+          unit_price: String(active.unit_price),
+          base_fee_monthly: String(active.base_fee_monthly),
+          monthly_payment: String(active.monthly_payment),
+          confirm_backdate: false
+        }
+      }));
+    }
+    if (nextMode === 'edit' && active) {
+      setEditDraft((prev) => ({ ...prev, [cat]: { ...active } }));
     }
   };
 
-  const handleContractScanned = async (scanned: AIContractScanResult) => {
-    const cat = scanned.category;
-    const updatedContract: Partial<Contract> = {
-      category: cat,
-      provider_name: scanned.provider_name,
-      tariff_name: scanned.tariff_name,
-      start_date: scanned.start_date || new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0, 10),
-      end_date: scanned.end_date || new Date(new Date().getFullYear(), 11, 31).toISOString().slice(0, 10),
-      base_fee_monthly: scanned.base_fee_monthly,
-      unit_price: scanned.unit_price,
-      monthly_payment: scanned.monthly_payment,
-      bonus_one_time: scanned.bonus_one_time,
-      bonus_notes: scanned.bonus_notes
-    };
-
-    setContracts((prev) => ({
-      ...prev,
-      [cat]: {
-        ...prev[cat],
-        ...updatedContract
-      }
-    }));
-
-    // Auto-save the scanned contract immediately
-    await saveContract(cat, updatedContract);
-    setSuccessMsg(`✨ KI-Scan erfolgreich: Tarif für ${getCategoryLabel(cat)} wurde übernommen und gespeichert!`);
-    setTimeout(() => setSuccessMsg(null), 5000);
+  const updateSuccessor = (cat: MeterCategory, patch: Partial<SuccessorDraft>) => {
+    const next = { ...(successor[cat] || emptySuccessor()), ...patch };
+    setSuccessor((prev) => ({ ...prev, [cat]: next }));
+    if (patch.start_date) {
+      contractApi.preview(cat, patch.start_date)
+        .then((p) => setPreview((prev) => ({ ...prev, [cat]: [p.message, ...p.warnings].join(' ') })))
+        .catch(() => setPreview((prev) => ({ ...prev, [cat]: '' })));
+    }
   };
 
-  const categories: MeterCategory[] = ['electricity', 'gas', 'water'];
+  const applyScan = (result: AIContractScanResult) => {
+    setScanned(result);
+    const cat = result.category;
+    const start = result.start_date || new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    const draft: SuccessorDraft = {
+      ...emptySuccessor(),
+      provider_name: result.provider_name || '',
+      tariff_name: result.tariff_name || '',
+      start_date: start,
+      end_date: result.end_date || '',
+      base_fee_monthly: String(result.base_fee_monthly ?? ''),
+      unit_price: String(result.unit_price ?? ''),
+      monthly_payment: String(result.monthly_payment ?? ''),
+      bonus_one_time: String(result.bonus_one_time ?? 0),
+      bonus_notes: result.bonus_notes || ''
+    };
+    setSuccessor((prev) => ({ ...prev, [cat]: draft }));
+    setMode((prev) => ({ ...prev, [cat]: 'successor' }));
+    contractApi.preview(cat, start)
+      .then((p) => setPreview((prev) => ({ ...prev, [cat]: [p.message, ...p.warnings].join(' ') })))
+      .catch(() => undefined);
+    setMessage('Scan-Entwurf übernommen. Bitte Startdatum und Konditionen prüfen und bestätigen.');
+  };
+
+  const saveSuccessor = async (cat: MeterCategory) => {
+    const d = successor[cat];
+    if (!d?.start_date) { setError('Bitte ein Startdatum angeben.'); return; }
+    setSaving(cat); setError(null); setMessage(null);
+    try {
+      const res = await contractApi.plan({
+        category: cat,
+        provider_name: d.provider_name || null,
+        tariff_name: d.tariff_name || null,
+        start_date: d.start_date,
+        end_date: d.end_date || null,
+        base_fee_monthly: Number(d.base_fee_monthly) || 0,
+        unit_price: Number(d.unit_price) || 0,
+        monthly_payment: Number(d.monthly_payment) || 0,
+        bonus_one_time: Number(d.bonus_one_time) || 0,
+        bonus_notes: d.bonus_notes || null,
+        warmwater_source: d.warmwater_source,
+        heating_start_month: d.heating_start_month,
+        heating_end_month: d.heating_end_month,
+        close_predecessor: d.close_predecessor,
+        confirm_backdate: d.confirm_backdate
+      });
+      setMessage(res.message);
+      setMode((prev) => ({ ...prev, [cat]: null }));
+      setSuccessor((prev) => ({ ...prev, [cat]: emptySuccessor() }));
+      await loadAll();
+    } catch (err: any) {
+      setError(err.message || 'Vertrag konnte nicht gespeichert werden.');
+    } finally { setSaving(null); }
+  };
+
+  const savePrice = async (cat: MeterCategory) => {
+    const d = priceDraft[cat];
+    if (!d?.valid_from) { setError('Bitte "Gültig ab" angeben.'); return; }
+    setSaving(cat); setError(null); setMessage(null);
+    try {
+      const res = await contractApi.priceChange({
+        contract_id: d.contract_id,
+        valid_from: d.valid_from,
+        unit_price: Number(d.unit_price) || 0,
+        base_fee_monthly: Number(d.base_fee_monthly) || 0,
+        monthly_payment: Number(d.monthly_payment) || 0,
+        confirm_backdate: d.confirm_backdate
+      });
+      setMessage(res.message);
+      setMode((prev) => ({ ...prev, [cat]: null }));
+      await loadAll();
+    } catch (err: any) {
+      setError(err.message || 'Preisänderung konnte nicht gespeichert werden.');
+    } finally { setSaving(null); }
+  };
+
+  const saveEdit = async (cat: MeterCategory) => {
+    const d = editDraft[cat];
+    if (!d) return;
+    setSaving(cat); setError(null); setMessage(null);
+    try {
+      await api.updateContract(cat, {
+        provider_name: d.provider_name || null,
+        tariff_name: d.tariff_name || null,
+        base_fee_monthly: Number(d.base_fee_monthly) || 0,
+        unit_price: Number(d.unit_price) || 0,
+        monthly_payment: Number(d.monthly_payment) || 0,
+        bonus_one_time: Number(d.bonus_one_time) || 0,
+        bonus_notes: d.bonus_notes || null,
+        warmwater_source: d.warmwater_source,
+        heating_start_month: d.heating_start_month,
+        heating_end_month: d.heating_end_month
+      });
+      setMessage('Aktueller Tarif aktualisiert.');
+      setMode((prev) => ({ ...prev, [cat]: null }));
+      await loadAll();
+    } catch (err: any) {
+      setError(err.message || 'Tarif konnte nicht aktualisiert werden.');
+    } finally { setSaving(null); }
+  };
+
+  const cancelChange = async (cat: MeterCategory, kind: 'contract' | 'price', id: number) => {
+    setError(null); setMessage(null);
+    try {
+      const res = kind === 'contract'
+        ? await contractApi.cancelContract(id)
+        : await contractApi.cancelPrice(id);
+      setMessage(res.message);
+      await loadAll();
+    } catch (err: any) {
+      setError(err.message || 'Änderung konnte nicht zurückgenommen werden.');
+    }
+  };
 
   return (
     <div className="space-y-6 pb-20 md:pb-10 max-w-6xl">
-      {/* Header & Scan Button */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-            Tarif- & Vertragsdaten
-          </h1>
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">Tarif- &amp; Vertragsdaten</h1>
           <p className="text-xs sm:text-sm text-slate-400 mt-0.5">
-            Erfassen Sie Grundgebühren, Arbeitspreise, monatliche Abschläge und Neukundenboni für exakte Abrechnungsprognosen.
+            Aktueller Tarif, nächste Änderung und Verlauf. Zukünftige Verträge und Preise ändern die heutigen Kosten nicht.
           </p>
         </div>
-
         <button
           type="button"
-          onClick={() => setIsScanModalOpen(true)}
-          className="inline-flex items-center justify-center space-x-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-semibold text-xs shadow-lg shadow-amber-500/20 transition-all active:scale-98"
+          onClick={() => setScanOpen(true)}
+          className="inline-flex items-center justify-center space-x-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-white font-semibold text-xs shadow-lg shadow-amber-500/20"
         >
-          <Camera className="w-4 h-4 text-white" />
-          <Sparkles className="w-3.5 h-3.5 text-amber-200" />
+          <Camera className="w-4 h-4" /><Sparkles className="w-3.5 h-3.5 text-amber-200" />
           <span>Tarif-Screenshots per KI scannen</span>
         </button>
       </div>
 
-      {/* Alerts */}
-      {successMsg && (
-        <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-sm flex items-center space-x-2.5 shadow-sm">
-          <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
-          <span>{successMsg}</span>
+      {message && (
+        <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-sm flex items-center space-x-2.5">
+          <CheckCircle2 className="w-5 h-5 flex-shrink-0" /><span>{message}</span>
         </div>
       )}
-
       {error && (
-        <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm flex items-center space-x-2.5 shadow-sm">
-          <AlertCircle className="w-5 h-5 flex-shrink-0" />
-          <span>{error}</span>
+        <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm flex items-center space-x-2.5">
+          <AlertCircle className="w-5 h-5 flex-shrink-0" /><span>{error}</span>
         </div>
       )}
 
-      {/* Contract Cards Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {categories.map((cat) => {
-          const c = contracts[cat];
-          const colors = getCategoryColor(cat);
+      <div className="space-y-6">
+        {CATEGORIES.map((cat) => {
+          const list = lists[cat];
+          const active = list?.active;
+          const next = list?.next_change;
           const label = getCategoryLabel(cat);
           const unit = cat === 'electricity' ? 'kWh' : 'm³';
-          const priceLabel = cat === 'electricity' ? 'EUR / kWh' : 'EUR / m³';
-
-          // Financial calculations
-          const annualBaseFee = (Number(c.base_fee_monthly) || 0) * 12;
-          const annualPayments = (Number(c.monthly_payment) || 0) * 12;
-          const bonus = Number(c.bonus_one_time) || 0;
+          const activePrice = active?.prices?.length
+            ? [...active.prices].sort((a, b) => b.valid_from.localeCompare(a.valid_from))[0]
+            : null;
+          const displayedUnitPrice = activePrice?.unit_price ?? active?.unit_price ?? 0;
+          const displayedBase = activePrice?.base_fee_monthly ?? active?.base_fee_monthly ?? 0;
+          const m = mode[cat] || null;
 
           return (
-            <div
-              key={cat}
-              className={`glass-card rounded-2xl p-5 border ${colors.border} flex flex-col justify-between space-y-4`}
-            >
-              <div>
-                {/* Card Header */}
-                <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-800">
-                  <div className="flex items-center space-x-2.5">
-                    <div className={`p-2 rounded-xl ${colors.bg} border ${colors.border}`}>
-                      {cat === 'electricity' && <Zap className="w-5 h-5 text-amber-400" />}
-                      {cat === 'gas' && <Flame className="w-5 h-5 text-orange-400" />}
-                      {cat === 'water' && <Droplets className="w-5 h-5 text-sky-400" />}
-                    </div>
-                    <div>
-                      <h2 className="font-bold text-white text-base">{label}-Tarif</h2>
-                      <span className="text-xs text-slate-400">
-                        {c.provider_name ? `${c.provider_name}` : 'Vertragsparameter'}
-                      </span>
-                    </div>
+            <section key={cat} className="glass-card rounded-2xl p-5 border border-slate-800 space-y-4">
+              <div className="flex items-center justify-between gap-3 pb-3 border-b border-slate-800">
+                <div className="flex items-center space-x-2.5">
+                  <div className={`p-2 rounded-xl ${cat === 'electricity' ? 'bg-amber-500/10 text-amber-400' : cat === 'gas' ? 'bg-orange-500/10 text-orange-400' : 'bg-sky-500/10 text-sky-400'}`}>
+                    {cat === 'electricity' ? <Zap className="w-5 h-5" /> : cat === 'gas' ? <Flame className="w-5 h-5" /> : <Droplets className="w-5 h-5" />}
                   </div>
-
-                  {bonus > 0 && (
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                      <Gift className="w-3 h-3 mr-1" />
-                      -{formatCurrency(bonus)}
-                    </span>
-                  )}
-                </div>
-
-                {/* Form Fields */}
-                <div className="space-y-3 text-xs">
-                  {/* Provider & Tariff Name */}
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-slate-400 mb-1 flex items-center space-x-1">
-                        <Building className="w-3 h-3" />
-                        <span>Anbieter</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={c.provider_name || ''}
-                        placeholder="z.B. Vattenfall"
-                        onChange={(e) => handleFieldChange(cat, 'provider_name', e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-white text-xs font-medium"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-slate-400 mb-1 flex items-center space-x-1">
-                        <Tag className="w-3 h-3" />
-                        <span>Tarifname</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={c.tariff_name || ''}
-                        placeholder="z.B. Easy 12M"
-                        onChange={(e) => handleFieldChange(cat, 'tariff_name', e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-white text-xs font-medium"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Contract Dates */}
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-slate-400 mb-1">Vertragsbeginn</label>
-                      <input
-                        type="date"
-                        value={c.start_date || ''}
-                        onChange={(e) => handleFieldChange(cat, 'start_date', e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-white text-xs font-mono"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-slate-400 mb-1">Vertragsende</label>
-                      <input
-                        type="date"
-                        value={c.end_date || ''}
-                        onChange={(e) => handleFieldChange(cat, 'end_date', e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-white text-xs font-mono"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Monthly Base Fee */}
                   <div>
-                    <label className="block text-slate-300 font-medium mb-1">
-                      Grundgebühr (EUR / Monat)
-                    </label>
-                    <div className="relative">
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={c.base_fee_monthly ?? ''}
-                        onChange={(e) => handleFieldChange(cat, 'base_fee_monthly', parseFloat(e.target.value))}
-                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-white font-mono"
-                        placeholder="z.B. 11.90"
-                      />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 font-medium">
-                        €/Mt.
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Unit Price */}
-                  <div>
-                    <label className="block text-slate-300 font-medium mb-1">
-                      Arbeitspreis ({priceLabel})
-                    </label>
-                    <div className="relative">
-                      <input
-                        type="number"
-                        step="0.0001"
-                        value={c.unit_price ?? ''}
-                        onChange={(e) => handleFieldChange(cat, 'unit_price', parseFloat(e.target.value))}
-                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-white font-mono"
-                        placeholder="z.B. 0.3250"
-                      />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 font-medium">
-                        €/{unit}
-                      </span>
-                    </div>
-                    <p className="text-[10px] text-slate-500 mt-0.5">
-                      z.B. 32,5 Cent/kWh = 0.3250 €
-                    </p>
-                  </div>
-
-                  {/* Monthly Payment (Abschlag) */}
-                  <div>
-                    <label className="block text-slate-300 font-medium mb-1">
-                      Monatlicher Abschlag (EUR / Monat)
-                    </label>
-                    <div className="relative">
-                      <input
-                        type="number"
-                        step="0.5"
-                        value={c.monthly_payment ?? ''}
-                        onChange={(e) => handleFieldChange(cat, 'monthly_payment', parseFloat(e.target.value))}
-                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-white font-mono"
-                        placeholder="z.B. 85.00"
-                      />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 font-medium">
-                        €/Mt.
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Bonus Section */}
-                  <div className="pt-2 border-t border-slate-800/80 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-semibold text-amber-400 flex items-center space-x-1">
-                        <Gift className="w-3.5 h-3.5" />
-                        <span>Einmaliger Bonus (1. Jahr)</span>
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <div className="relative">
-                          <input
-                            type="number"
-                            step="1"
-                            value={c.bonus_one_time ?? ''}
-                            onChange={(e) => handleFieldChange(cat, 'bonus_one_time', parseFloat(e.target.value) || 0)}
-                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-amber-300 font-mono text-xs font-semibold"
-                            placeholder="0 €"
-                          />
-                          <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs">
-                            €
-                          </span>
-                        </div>
-                      </div>
-                      <div>
-                        <input
-                          type="text"
-                          value={c.bonus_notes || ''}
-                          onChange={(e) => handleFieldChange(cat, 'bonus_notes', e.target.value)}
-                          placeholder="z.B. Sofortbonus"
-                          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-slate-300 text-[11px]"
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Gas Specific: Warmwater & Heating Season Configuration */}
-                  {cat === 'gas' && (
-                    <div className="p-3 rounded-xl bg-orange-950/20 border border-orange-500/20 space-y-2 text-xs">
-                      <span className="font-semibold text-orange-300 block">
-                        Warmwasser- & Heizprofil:
-                      </span>
-                      <div>
-                        <label className="block text-slate-400 text-[11px] mb-1">
-                          Warmwasserbereitung:
-                        </label>
-                        <select
-                          value={c.warmwater_source || 'electricity'}
-                          onChange={(e) => handleFieldChange('gas', 'warmwater_source', e.target.value)}
-                          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-white text-xs"
-                        >
-                          <option value="electricity">⚡ Über Strom (0 m³ Gas im Sommer)</option>
-                          <option value="gas">🔥 Über Gaszentralheizung</option>
-                        </select>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2 pt-1">
-                        <div>
-                          <label className="block text-slate-400 text-[10px] mb-1">
-                            Heizbeginn (Monat):
-                          </label>
-                          <select
-                            value={c.heating_start_month || 10}
-                            onChange={(e) => handleFieldChange('gas', 'heating_start_month', Number(e.target.value))}
-                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-2 py-1 text-white text-xs"
-                          >
-                            <option value={9}>September</option>
-                            <option value={10}>Oktober (Standard)</option>
-                            <option value={11}>November</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label className="block text-slate-400 text-[10px] mb-1">
-                            Heizende (Monat):
-                          </label>
-                          <select
-                            value={c.heating_end_month || 4}
-                            onChange={(e) => handleFieldChange('gas', 'heating_end_month', Number(e.target.value))}
-                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-2 py-1 text-white text-xs"
-                          >
-                            <option value={3}>März</option>
-                            <option value={4}>April (Standard)</option>
-                            <option value={5}>Mai</option>
-                          </select>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Annual Calculation Breakdown */}
-                  <div className="mt-3 p-3 rounded-xl bg-slate-900/80 border border-slate-800 text-[11px] space-y-1.5">
-                    <div className="flex justify-between text-slate-400">
-                      <span>Jahres-Grundgebühr:</span>
-                      <span className="text-white font-mono font-medium">{formatCurrency(annualBaseFee)}</span>
-                    </div>
-                    <div className="flex justify-between text-slate-400">
-                      <span>Gezahlte Abschläge / Jahr:</span>
-                      <span className="text-emerald-400 font-mono font-medium">{formatCurrency(annualPayments)}</span>
-                    </div>
-                    {bonus > 0 && (
-                      <div className="flex justify-between text-amber-400 font-medium border-t border-slate-800 pt-1">
-                        <span>Einmalbonus (1. Jahr):</span>
-                        <span className="font-mono">-{formatCurrency(bonus)}</span>
-                      </div>
-                    )}
+                    <h2 className="font-bold text-white text-base">{label}</h2>
+                    <p className="text-[11px] text-slate-400">{active ? `${active.provider_name || 'Anbieter unbekannt'} · ${active.tariff_name || 'Tarif'}` : 'Kein aktiver Tarif hinterlegt'}</p>
                   </div>
                 </div>
+                {active ? (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">Aktiv</span>
+                ) : (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">Tarif fehlt</span>
+                )}
               </div>
 
-              {/* Save Button */}
-              <button
-                type="button"
-                disabled={savingCategory === cat}
-                onClick={() => saveContract(cat)}
-                className="w-full flex items-center justify-center space-x-2 py-2 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-slate-600 text-white font-medium text-xs transition-all active:scale-98 disabled:opacity-50"
-              >
-                <Save className="w-3.5 h-3.5" />
-                <span>
-                  {savingCategory === cat ? 'Speichern...' : `${label}-Tarif speichern`}
-                </span>
-              </button>
-            </div>
+              {active ? (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                  <InfoTile icon={<Calendar className="w-3.5 h-3.5" />} label="Laufzeit" value={`${active.start_date} – ${active.end_date || 'offen'}`} />
+                  <InfoTile icon={<Tag className="w-3.5 h-3.5" />} label="Arbeitspreis" value={`${formatCurrency(displayedUnitPrice)} / ${unit}`} />
+                  <InfoTile icon={<Building className="w-3.5 h-3.5" />} label="Grundpreis" value={`${formatCurrency(displayedBase)} / Mt.`} />
+                  <InfoTile icon={<Clock className="w-3.5 h-3.5" />} label="Abschlag" value={active.monthly_payment > 0 ? `${formatCurrency(active.monthly_payment)} / Mt.` : 'keiner'} />
+                  {(active.bonus_one_time ?? 0) > 0 && (
+                    <div className="col-span-2 sm:col-span-4 flex items-center space-x-1.5 text-amber-300">
+                      <Gift className="w-3.5 h-3.5" />
+                      <span>Einmalbonus {formatCurrency(active.bonus_one_time || 0)}{active.bonus_notes ? ` (${active.bonus_notes})` : ''} – wird nur einmal je Vertrag berücksichtigt.</span>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400">Ohne Tarif werden Verbräuche angezeigt, aber keine Kosten berechnet. Die Ablesung ist trotzdem möglich.</p>
+              )}
+
+              {!!list?.gaps?.length && (
+                <div className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-xl p-2.5">
+                  Kein Tarif hinterlegt: {list.gaps.map((g) => `${g.start_date} – ${g.end_date}`).join(', ')}. Der Verbrauch bleibt sichtbar, der Zeitraum wird nicht mit 0 € bepreist.
+                </div>
+              )}
+
+              {next && (
+                <div className="p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/30 space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold text-indigo-300 flex items-center space-x-1.5"><ArrowRight className="w-3.5 h-3.5" /> Nächste Änderung ab {next.start_date}</span>
+                    <button type="button" onClick={() => cancelChange(cat, 'contract', next.id)} className="flex items-center space-x-1 text-[11px] text-slate-300 hover:text-rose-300">
+                      <RotateCcw className="w-3 h-3" /><span>Zurücknehmen</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-300">
+                    {next.provider_name || 'Neuer Tarif'} · {formatCurrency(next.unit_price)} / {unit} · {formatCurrency(next.base_fee_monthly)} / Mt.
+                  </p>
+                  {next.prices.filter((p) => p.valid_from > next.start_date).map((p) => (
+                    <div key={p.id} className="flex items-center justify-between text-[11px] text-slate-300">
+                      <span>Preisänderung ab {p.valid_from}: {formatCurrency(p.unit_price)} / {unit}</span>
+                      <button type="button" onClick={() => cancelChange(cat, 'price', p.id)} className="text-slate-400 hover:text-rose-300">Zurücknehmen</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={() => openForm(cat, 'successor')} className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium border border-slate-700">
+                  <Plus className="w-3.5 h-3.5 text-emerald-400" /><span>Folgevertrag planen</span>
+                </button>
+                <button type="button" onClick={() => openForm(cat, 'price')} disabled={!active} className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium border border-slate-700 disabled:opacity-40">
+                  <Tag className="w-3.5 h-3.5 text-amber-400" /><span>Preisänderung eintragen</span>
+                </button>
+                <button type="button" onClick={() => openForm(cat, 'edit')} disabled={!active} className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium border border-slate-700 disabled:opacity-40">
+                  <Save className="w-3.5 h-3.5" /><span>Aktuellen Tarif anpassen</span>
+                </button>
+                <button type="button" onClick={() => setOpenHistory((p) => ({ ...p, [cat]: !p[cat] }))} className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs border border-slate-800">
+                  <History className="w-3.5 h-3.5" /><span>Verlauf</span>
+                  {openHistory[cat] ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                </button>
+              </div>
+
+              {openHistory[cat] && (
+                <div className="space-y-2 pt-2 border-t border-slate-800">
+                  {(list?.history || []).length === 0 && <p className="text-[11px] text-slate-500">Keine früheren Verträge gespeichert.</p>}
+                  {list?.history.map((h) => (
+                    <div key={h.id} className="flex items-center justify-between text-[11px] text-slate-400 bg-slate-900/60 rounded-lg px-3 py-2">
+                      <span>{h.provider_name || 'Tarif'} · {h.start_date} – {h.end_date || 'offen'}</span>
+                      <span className="font-mono text-slate-300">{formatCurrency(h.unit_price)} / {unit}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {m === 'successor' && successor[cat] && (
+                <div className="p-4 rounded-xl bg-slate-900/90 border border-emerald-500/30 space-y-3">
+                  <h3 className="text-xs font-bold text-white flex items-center space-x-1.5"><Calendar className="w-3.5 h-3.5 text-emerald-400" /> Folgevertrag planen</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <Field label="Startdatum" value={successor[cat]!.start_date} type="date" onChange={(v) => updateSuccessor(cat, { start_date: v })} />
+                    <Field label="Enddatum (optional)" value={successor[cat]!.end_date} type="date" onChange={(v) => updateSuccessor(cat, { end_date: v })} />
+                    <Field label="Anbieter" value={successor[cat]!.provider_name} onChange={(v) => updateSuccessor(cat, { provider_name: v })} />
+                    <Field label="Tarifname" value={successor[cat]!.tariff_name} onChange={(v) => updateSuccessor(cat, { tariff_name: v })} />
+                    <Field label={`Arbeitspreis (€/${unit})`} value={successor[cat]!.unit_price} type="number" onChange={(v) => updateSuccessor(cat, { unit_price: v })} />
+                    <Field label="Grundpreis (€/Mt.)" value={successor[cat]!.base_fee_monthly} type="number" onChange={(v) => updateSuccessor(cat, { base_fee_monthly: v })} />
+                    <Field label="Abschlag (€/Mt.)" value={successor[cat]!.monthly_payment} type="number" onChange={(v) => updateSuccessor(cat, { monthly_payment: v })} />
+                    <Field label="Einmalbonus (€)" value={successor[cat]!.bonus_one_time} type="number" onChange={(v) => updateSuccessor(cat, { bonus_one_time: v })} />
+                  </div>
+                  {cat === 'gas' && (
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <label className="text-[11px] text-slate-400">Warmwasser
+                        <select value={successor[cat]!.warmwater_source} onChange={(e) => updateSuccessor(cat, { warmwater_source: e.target.value })} className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white">
+                          <option value="electricity">über Strom</option><option value="gas">über Gas</option>
+                        </select>
+                      </label>
+                      <label className="text-[11px] text-slate-400">Heizbeginn
+                        <select value={successor[cat]!.heating_start_month} onChange={(e) => updateSuccessor(cat, { heating_start_month: Number(e.target.value) })} className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white">
+                          {[9, 10, 11].map((x) => <option key={x} value={x}>{x}</option>)}
+                        </select>
+                      </label>
+                      <label className="text-[11px] text-slate-400">Heizende
+                        <select value={successor[cat]!.heating_end_month} onChange={(e) => updateSuccessor(cat, { heating_end_month: Number(e.target.value) })} className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-white">
+                          {[3, 4, 5].map((x) => <option key={x} value={x}>{x}</option>)}
+                        </select>
+                      </label>
+                    </div>
+                  )}
+                  <label className="flex items-center space-x-2 text-[11px] text-slate-300">
+                    <input type="checkbox" checked={successor[cat]!.close_predecessor} onChange={(e) => updateSuccessor(cat, { close_predecessor: e.target.checked })} />
+                    <span>Offenen Vorgänger am Tag vor Beginn beenden (gemeinsam speichern)</span>
+                  </label>
+                  {preview[cat] && <div className="text-[11px] text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 rounded-lg px-3 py-2">{preview[cat]}</div>}
+                  {scanned && scanned.category === cat && <div className="text-[11px] text-amber-300">Entwurf aus dem KI-Scan – bitte prüfen. Erst die Bestätigung speichert den Vertrag.</div>}
+                  <div className="flex items-center justify-end gap-2 pt-2">
+                    <button type="button" onClick={() => setMode((p) => ({ ...p, [cat]: null }))} className="px-3 py-1.5 rounded-lg border border-slate-700 text-xs text-slate-300">Abbrechen</button>
+                    <button type="button" disabled={saving === cat} onClick={() => saveSuccessor(cat)} className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold disabled:opacity-50">Übergang bestätigen &amp; speichern</button>
+                  </div>
+                </div>
+              )}
+
+              {m === 'price' && priceDraft[cat] && (
+                <div className="p-4 rounded-xl bg-slate-900/90 border border-amber-500/30 space-y-3">
+                  <h3 className="text-xs font-bold text-white flex items-center space-x-1.5"><Tag className="w-3.5 h-3.5 text-amber-400" /> Preisänderung eintragen</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <Field label="Gültig ab" value={priceDraft[cat].valid_from} type="date" onChange={(v) => setPriceDraft((p) => ({ ...p, [cat]: { ...p[cat], valid_from: v } }))} />
+                    <Field label={`Neuer Arbeitspreis (€/${unit})`} value={priceDraft[cat].unit_price} type="number" onChange={(v) => setPriceDraft((p) => ({ ...p, [cat]: { ...p[cat], unit_price: v } }))} />
+                    <Field label="Neuer Grundpreis (€/Mt.)" value={priceDraft[cat].base_fee_monthly} type="number" onChange={(v) => setPriceDraft((p) => ({ ...p, [cat]: { ...p[cat], base_fee_monthly: v } }))} />
+                    <Field label="Neuer Abschlag (€/Mt.)" value={priceDraft[cat].monthly_payment} type="number" onChange={(v) => setPriceDraft((p) => ({ ...p, [cat]: { ...p[cat], monthly_payment: v } }))} />
+                  </div>
+                  <p className="text-[11px] text-slate-400">Anbieter, Vertragsbeginn und Bonus bleiben erhalten. Nicht geänderte Preisbestandteile gelten weiter.</p>
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <label className="flex items-center space-x-2 text-[11px] text-slate-300">
+                      <input type="checkbox" checked={!!priceDraft[cat].confirm_backdate} onChange={(e) => setPriceDraft((p) => ({ ...p, [cat]: { ...p[cat], confirm_backdate: e.target.checked } }))} />
+                      <span>Rückwirkend bestätigen</span>
+                    </label>
+                    <div className="flex gap-2">
+                      <button type="button" onClick={() => setMode((p) => ({ ...p, [cat]: null }))} className="px-3 py-1.5 rounded-lg border border-slate-700 text-xs text-slate-300">Abbrechen</button>
+                      <button type="button" disabled={saving === cat} onClick={() => savePrice(cat)} className="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold disabled:opacity-50">Alt vs. Neu prüfen &amp; speichern</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {m === 'edit' && editDraft[cat] && (
+                <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-700 space-y-3">
+                  <h3 className="text-xs font-bold text-white">Aktuellen Tarif anpassen</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <Field label="Anbieter" value={editDraft[cat]!.provider_name || ''} onChange={(v) => setEditDraft((p) => ({ ...p, [cat]: { ...p[cat]!, provider_name: v } }))} />
+                    <Field label="Tarifname" value={editDraft[cat]!.tariff_name || ''} onChange={(v) => setEditDraft((p) => ({ ...p, [cat]: { ...p[cat]!, tariff_name: v } }))} />
+                    <Field label={`Arbeitspreis (€/${unit})`} value={String(editDraft[cat]!.unit_price ?? '')} type="number" onChange={(v) => setEditDraft((p) => ({ ...p, [cat]: { ...p[cat]!, unit_price: Number(v) } }))} />
+                    <Field label="Grundpreis (€/Mt.)" value={String(editDraft[cat]!.base_fee_monthly ?? '')} type="number" onChange={(v) => setEditDraft((p) => ({ ...p, [cat]: { ...p[cat]!, base_fee_monthly: Number(v) } }))} />
+                    <Field label="Abschlag (€/Mt.)" value={String(editDraft[cat]!.monthly_payment ?? '')} type="number" onChange={(v) => setEditDraft((p) => ({ ...p, [cat]: { ...p[cat]!, monthly_payment: Number(v) } }))} />
+                    <Field label="Einmalbonus (€)" value={String(editDraft[cat]!.bonus_one_time ?? '')} type="number" onChange={(v) => setEditDraft((p) => ({ ...p, [cat]: { ...p[cat]!, bonus_one_time: Number(v) } }))} />
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button type="button" onClick={() => setMode((p) => ({ ...p, [cat]: null }))} className="px-3 py-1.5 rounded-lg border border-slate-700 text-xs text-slate-300">Abbrechen</button>
+                    <button type="button" disabled={saving === cat} onClick={() => saveEdit(cat)} className="px-4 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-xs font-semibold disabled:opacity-50">Speichern</button>
+                  </div>
+                </div>
+              )}
+            </section>
           );
         })}
       </div>
 
-      {/* Modal for AI Contract Screenshot Scanning */}
       <ScanContractModal
-        isOpen={isScanModalOpen}
-        onClose={() => setIsScanModalOpen(false)}
-        onApplyContract={handleContractScanned}
+        isOpen={scanOpen}
+        onClose={() => setScanOpen(false)}
+        onApplyContract={applyScan}
       />
     </div>
   );
 };
+
+const InfoTile: React.FC<{ icon: React.ReactNode; label: string; value: string }> = ({ icon, label, value }) => (
+  <div className="p-2.5 rounded-xl bg-slate-900/70 border border-slate-800 space-y-1">
+    <div className="flex items-center space-x-1 text-[10px] text-slate-400">{icon}<span>{label}</span></div>
+    <div className="text-[11px] font-mono text-white break-words">{value}</div>
+  </div>
+);
+
+const Field: React.FC<{ label: string; value: string; type?: string; onChange: (v: string) => void }> = ({ label, value, type = 'text', onChange }) => (
+  <label className="block text-[11px] text-slate-400">
+    {label}
+    <input
+      type={type}
+      step={type === 'number' ? 'any' : undefined}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500"
+    />
+  </label>
+);

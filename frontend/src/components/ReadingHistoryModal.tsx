@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   History,
@@ -39,6 +39,10 @@ export const ReadingHistoryModal: React.FC<ReadingHistoryModalProps> = ({
   const [newNotes, setNewNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  const firstInputRef = useRef<HTMLInputElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => { returnFocusRef.current = document.activeElement as HTMLElement; }, [isOpen]);
 
   useEffect(() => {
     if (isOpen && meter) {
@@ -55,6 +59,16 @@ export const ReadingHistoryModal: React.FC<ReadingHistoryModalProps> = ({
       setNewDate(localDatetime);
     }
   }, [isOpen, meter]);
+
+  useEffect(() => {
+    if (isAddOpen) firstInputRef.current?.focus();
+  }, [isAddOpen]);
+
+  useEffect(() => {
+    if (!isOpen && returnFocusRef.current) {
+      returnFocusRef.current.focus();
+    }
+  }, [isOpen]);
 
   const loadReadings = async () => {
     if (!meter) return;
@@ -119,7 +133,7 @@ export const ReadingHistoryModal: React.FC<ReadingHistoryModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm overflow-y-auto">
-      <div className="glass-panel rounded-2xl border border-slate-700 w-full max-w-2xl p-5 sm:p-6 shadow-2xl space-y-4 my-8 max-h-[90vh] flex flex-col">
+      <div role="dialog" aria-modal="true" aria-labelledby="reading-history-title" className="glass-panel rounded-2xl border border-slate-700 w-full max-w-2xl p-5 sm:p-6 shadow-2xl space-y-4 my-8 max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-slate-800">
           <div className="flex items-center space-x-2.5">
@@ -127,7 +141,7 @@ export const ReadingHistoryModal: React.FC<ReadingHistoryModalProps> = ({
               <History className="w-5 h-5 text-emerald-400" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">Ablesehistorie</h2>
+              <h2 id="reading-history-title" className="text-lg font-bold text-white">Ablesehistorie</h2>
               <p className="text-xs text-slate-400">
                 {meter.name} ({meter.unit}) {meter.meter_number ? `— Nr. ${meter.meter_number}` : ''}
               </p>
@@ -179,6 +193,7 @@ export const ReadingHistoryModal: React.FC<ReadingHistoryModalProps> = ({
                   Ablesedatum & Uhrzeit
                 </label>
                 <input
+                  ref={firstInputRef}
                   type="datetime-local"
                   required
                   value={newDate}

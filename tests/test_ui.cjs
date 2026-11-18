@@ -19,6 +19,23 @@ async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function check(condition, message) {
+  if (!condition) {
+    throw new Error(`Ergebnisprüfung fehlgeschlagen: ${message}`);
+  }
+  console.log(`OK: ${message}`);
+}
+
+async function clickByText(page, text) {
+  const clicked = await page.evaluate((needle) => {
+    const buttons = Array.from(document.querySelectorAll('button, a'));
+    const btn = buttons.find(b => b.textContent && b.textContent.includes(needle));
+    if (btn) { btn.click(); return true; }
+    return false;
+  }, text);
+  if (!clicked) throw new Error(`Kein Element mit Text "${text}" gefunden`);
+}
+
 async function runTests() {
   console.log(`Starting MeterPulse Puppeteer UI Verification against ${BASE_URL}...`);
   console.log(`Using Chrome binary: ${CHROME_PATH}`);
@@ -54,6 +71,15 @@ async function runTests() {
     // Verify Title
     const title = await page.title();
     console.log(`Page title: "${title}"`);
+    check(title.includes('MeterPulse'), 'Seitentitel enthält MeterPulse');
+
+    const viewport = await page.$eval('meta[name="viewport"]', el => el.content);
+    check(!viewport.includes('maximum-scale') && !viewport.includes('user-scalable=no'), 'Zoomsperre ist entfernt');
+
+    const overview = await page.evaluate(() => /auf einen blick/i.test(document.body.innerText));
+    check(overview, 'Overview zeigt verdichtete Zeilen (Auf einen Blick)');
+    const nav = await page.$('button[aria-label="Zähler scannen"]');
+    check(!!nav, 'Untere Navigation mit Scan-Aktion vorhanden');
 
     // Screenshot initial 30d Dashboard
     await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'desktop_dashboard_30d.png'), fullPage: false });
@@ -75,6 +101,14 @@ async function runTests() {
 
     await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'desktop_dashboard_year.png'), fullPage: false });
     console.log('Saved screenshot: desktop_dashboard_year.png');
+
+    // URL routing: category detail is addressable, browser back returns to overview
+    await clickByText(page, 'Strom');
+    await sleep(1200);
+    check(page.url().endsWith('/category/electricity'), 'Kategoriedetail ist über URL erreichbar');
+    await page.goBack({ waitUntil: 'networkidle0' });
+    await sleep(1000);
+    check(new URL(page.url()).pathname === '/', 'Browser-Zurück führt vom Detail zur Übersicht');
 
     // 3. Test Persistence across Page Reload
     console.log('Testing localStorage persistence across page reload...');
@@ -165,7 +199,38 @@ async function runTests() {
     await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'mobile_scan_modal.png'), fullPage: false });
     console.log('Saved screenshot: mobile_scan_modal.png');
 
-    console.log('All tests passed! Timeframe switching & localStorage persistence verified successfully.');
+    // Manual capture without photo: available at 390 px and usable at 360 px
+    check(await page.evaluate(() => document.body.innerText.includes('Manuell eingeben')), 'Manuelle Erfassung ohne Foto angeboten');
+    await clickByText(page, 'Manuell eingeben');
+    await sleep(800);
+    check(await page.$('[role="dialog"]') !== null, 'Manuelles Formular als beschrifteter Dialog geöffnet');
+    await clickByText(page, 'Ablesung erfassen');
+    await sleep(500);
+    check(await page.$('input[type="number"]') !== null, 'Manuelles Eingabefeld erreichbar');
+
+    const testValue = String(900000 + (Date.now() % 100000));
+    await page.$eval('input[type="number"]', (el, value) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(el, value);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }, testValue);
+    await clickByText(page, 'Ablesung eintragen');
+    await sleep(1500);
+    const saved = await page.evaluate(async (value) => {
+      const response = await fetch('/api/readings?limit=50');
+      const items = await response.json();
+      return items.some((item) => Math.abs(item.reading_value - Number(value)) < 0.001);
+    }, testValue);
+    check(saved, 'Zählerstand ohne Foto gespeichert (API-Historie)');
+
+    await page.setViewport({ width: 360, height: 780, isMobile: true, hasTouch: true });
+    await sleep(800);
+    const narrowNav = await page.$('button[aria-label="Zähler scannen"]');
+    check(!!narrowNav, 'Navigation bei 360 px weiterhin bedienbar');
+    const noOverflow = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 2);
+    check(noOverflow, 'Kein horizontaler Überlauf bei 360 px');
+
+    console.log('All tests passed! Timeframe, persistence, URLs and mobile capture verified.');
   } catch (err) {
     console.error('Puppeteer test failed:', err);
     process.exit(1);

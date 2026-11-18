@@ -101,7 +101,7 @@ def list_category_contracts(category: str, db: Session = Depends(get_db)):
         active=_to_detail(active, today) if active else None,
         next_change=_to_detail(upcoming[0], today) if upcoming else None,
         history=history,
-        gaps=[{"start_date": g["start"], "end_date": g["end"]} for g in find_gaps(all_c, date(today.year, 1, 1), date(today.year, 12, 31))],
+        gaps=find_gaps(all_c, date(today.year, 1, 1), date(today.year, 12, 31)),
     )
 
 

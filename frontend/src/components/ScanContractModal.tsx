@@ -549,6 +549,10 @@ export const ScanContractModal: React.FC<ScanContractModalProps> = ({
                 )}
               </div>
 
+              <p className="text-[11px] text-amber-300/90">
+                Der Scan ist ein Entwurf: Fehlende Daten werden abgefragt. Erst die Bestätigung im Vertragsformular speichert den Vertrag.
+              </p>
+
               {/* Action Buttons */}
               <div className="flex items-center space-x-3 pt-2">
                 <button

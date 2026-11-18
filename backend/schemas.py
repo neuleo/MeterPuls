@@ -289,6 +289,7 @@ class CostDay(BaseModel):
     is_gap: bool
     is_estimated: bool
     is_projected: bool
+    unit_mismatch: bool = False
 
 class CostPeriod(BaseModel):
     contract_id: Optional[int] = None
@@ -321,3 +322,8 @@ class CostBreakdownResponse(BaseModel):
     gaps: List[CostPeriod]
     totals: Dict[str, CostTotalsBlock]
     has_gap: bool = False
+    unit_mismatch: bool = False
+    meter_unit: str = ""
+    price_unit: str = ""
+
+

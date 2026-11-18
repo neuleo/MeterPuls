@@ -8,7 +8,11 @@ import {
   AIContractScanResult,
   DashboardData,
   MeterCategory,
-  ExportDataResponse
+  ExportDataResponse,
+  ContractDetail,
+  ContractListResponse,
+  ContractPlanResult,
+  CostBreakdown
 } from './types';
 
 const API_BASE = '/api';
@@ -99,6 +103,7 @@ export const api = {
     reading_date: string;
     notes?: string;
     image_path?: string;
+    client_ref?: string;
   }): Promise<Reading> {
     const res = await fetch(`${API_BASE}/readings`, {
       method: 'POST',
@@ -242,3 +247,81 @@ export const api = {
     return handleResponse<ExportDataResponse>(res);
   }
 };
+
+const contractPlanApi = {
+  async list(category: MeterCategory): Promise<ContractListResponse> {
+    const res = await fetch(`${API_BASE}/contracts/${category}/list`);
+    return handleResponse<ContractListResponse>(res);
+  },
+
+  async preview(category: MeterCategory, startDate: string): Promise<{ message: string; warnings: string[] }> {
+    const params = new URLSearchParams({ category, start_date: startDate });
+    const res = await fetch(`${API_BASE}/contracts/preview?${params.toString()}`);
+    return handleResponse<{ message: string; warnings: string[] }>(res);
+  },
+
+  async plan(data: {
+    category: MeterCategory;
+    provider_name?: string | null;
+    tariff_name?: string | null;
+    start_date: string;
+    end_date?: string | null;
+    base_fee_monthly: number;
+    unit_price: number;
+    monthly_payment: number;
+    bonus_one_time?: number;
+    bonus_notes?: string | null;
+    warmwater_source?: string;
+    heating_start_month?: number;
+    heating_end_month?: number;
+    close_predecessor?: boolean;
+    confirm_backdate?: boolean;
+  }): Promise<ContractPlanResult> {
+    const res = await fetch(`${API_BASE}/contracts/plan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    return handleResponse<ContractPlanResult>(res);
+  },
+
+  async priceChange(data: {
+    contract_id: number;
+    valid_from: string;
+    unit_price?: number;
+    base_fee_monthly?: number;
+    monthly_payment?: number;
+    confirm_backdate?: boolean;
+  }): Promise<ContractPlanResult> {
+    const res = await fetch(`${API_BASE}/contracts/price-change`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    return handleResponse<ContractPlanResult>(res);
+  },
+
+  async cancelContract(contractId: number): Promise<ContractPlanResult> {
+    const res = await fetch(`${API_BASE}/contracts/${contractId}`, { method: 'DELETE' });
+    return handleResponse<ContractPlanResult>(res);
+  },
+
+  async cancelPrice(priceId: number): Promise<ContractPlanResult> {
+    const res = await fetch(`${API_BASE}/contracts/price/${priceId}`, { method: 'DELETE' });
+    return handleResponse<ContractPlanResult>(res);
+  }
+};
+
+export const contractApi = contractPlanApi;
+
+export async function getCostBreakdown(
+  category: MeterCategory,
+  startDate: string,
+  endDate: string
+): Promise<CostBreakdown> {
+  const params = new URLSearchParams({ category, start_date: startDate, end_date: endDate });
+  const res = await fetch(`${API_BASE}/analytics/breakdown?${params.toString()}`);
+  return handleResponse<CostBreakdown>(res);
+}
+
+export type { ContractDetail };

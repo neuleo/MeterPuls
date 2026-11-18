@@ -43,8 +43,8 @@ import {
   CartesianGrid,
   ReferenceLine
 } from 'recharts';
-import { Meter, MeterCategory, Contract, DashboardData, CategorySummary, TimeSeriesPoint, Reading } from '../types';
-import { api } from '../api';
+import { Meter, MeterCategory, Contract, DashboardData, CategorySummary, TimeSeriesPoint, Reading, CostBreakdown } from '../types';
+import { api, getCostBreakdown } from '../api';
 import {
   formatCurrency,
   formatNumber,
@@ -61,7 +61,9 @@ interface CategoryDetailDashboardProps {
   onOpenScan: () => void;
   onOpenHistory: (meter: Meter) => void;
   onNavigateToContracts: () => void;
+  onNavigateToMeters?: () => void;
   onOpenExport?: () => void;
+  refreshKey?: number;
 }
 
 export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = ({
@@ -71,9 +73,12 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
   onOpenScan,
   onOpenHistory,
   onNavigateToContracts,
-  onOpenExport
+  onNavigateToMeters,
+  onOpenExport,
+  refreshKey = 0
 }) => {
   const [data, setData] = useState<DashboardData | null>(null);
+  const [breakdown, setBreakdown] = useState<CostBreakdown | null>(null);
   const [contracts, setContracts] = useState<Record<MeterCategory, Contract | null>>({
     electricity: null,
     gas: null,
@@ -108,20 +113,25 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
 
   useEffect(() => {
     loadAllData();
-  }, [category, timeframe, granularity]);
+  }, [category, timeframe, granularity, refreshKey]);
 
   const loadAllData = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [analyticsRes, contractsRes, metersRes, readingsRes] = await Promise.all([
+      const today = new Date();
+      const from = `${today.getFullYear() - 2}-01-01`;
+      const to = `${today.getFullYear() + 1}-12-31`;
+      const [analyticsRes, contractsRes, metersRes, readingsRes, breakdownRes] = await Promise.all([
         api.getDashboardAnalytics(timeframe, granularity, customStart, customEnd),
         api.getContracts(),
         api.getMeters(),
-        api.getReadings(undefined, category, 500)
+        api.getReadings(undefined, category, 500),
+        getCostBreakdown(category, from, to)
       ]);
 
       setData(analyticsRes);
+      setBreakdown(breakdownRes);
 
       const cMap: any = { electricity: null, gas: null, water: null };
       if (contractsRes) {
@@ -163,6 +173,25 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
   const summary: CategorySummary | undefined = data?.summaries?.[category];
   const contract: Contract | null = contracts[category];
 
+  const costForRange = (startISO: string, endISO: string) => {
+    if (!breakdown) return null;
+    const start = new Date(`${startISO.slice(0, 10)}T00:00:00`);
+    start.setDate(start.getDate() + 1);
+    const end = new Date(`${endISO.slice(0, 10)}T00:00:00`);
+    let energy = 0;
+    let base = 0;
+    let days = 0;
+    breakdown.days.forEach((d) => {
+      const day = new Date(`${d.date}T00:00:00`);
+      if (day >= start && day <= end) {
+        energy += d.energy_cost;
+        base += d.base_cost;
+        days += 1;
+      }
+    });
+    return { energy, base, total: energy + base, days };
+  };
+
   // Specific properties
   const isWater = category === 'water';
   const unit = category === 'electricity' ? 'kWh' : 'm³';
@@ -177,16 +206,20 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
   const bonusOneTime = contract?.bonus_one_time ?? summary?.bonus_one_time ?? 0;
 
   // Key figures
-  const totalConsumptionSoFar = summary?.total_consumption ?? 0;
-  const costSoFar = summary?.cost_so_far ?? 0;
-  const paidSoFar = summary?.paid_so_far ?? 0;
-  const balanceSoFar = summary?.balance_so_far ?? 0;
+  const totalConsumptionSoFar = breakdown?.totals.actual.consumption ?? summary?.total_consumption ?? 0;
+  const costSoFar = breakdown?.totals.actual.cost ?? summary?.cost_so_far ?? 0;
+  const paidSoFar = breakdown?.totals.actual.payment ?? summary?.paid_so_far ?? 0;
+  const balanceSoFar = breakdown?.totals.actual.balance ?? summary?.balance_so_far ?? 0;
   const isRefundSoFar = balanceSoFar >= 0;
 
-  const projectedConsumption = summary?.projected_consumption ?? 0;
-  const projectedTotalCost = summary?.projected_total_cost ?? 0;
-  const projectedTotalPaid = summary?.projected_total_paid ?? 0;
-  const projectedBalance = summary?.projected_balance ?? 0;
+  const projectedConsumption = breakdown
+    ? breakdown.totals.actual.consumption + breakdown.totals.forecast.consumption
+    : summary?.projected_consumption ?? 0;
+  const projectedTotalCost = breakdown?.totals.all.cost_with_bonus ?? summary?.projected_total_cost ?? 0;
+  const projectedTotalPaid = breakdown
+    ? breakdown.totals.actual.payment + breakdown.totals.forecast.payment
+    : summary?.projected_total_paid ?? 0;
+  const projectedBalance = projectedTotalPaid - projectedTotalCost;
   const isProjectedRefund = projectedBalance >= 0;
 
   // Days elapsed in year or contract
@@ -292,12 +325,14 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
         const weeklyConsumption = dailyConsumption * 7;
         const monthlyConsumption = dailyConsumption * 30.4;
 
-        const dailyCost = (dailyConsumption * unitPrice) + dailyBaseFee;
+        const priced = costForRange(prev.reading_date, curr.reading_date);
+        const consumptionCost = priced ? priced.energy : delta * unitPrice;
+        const baseFeeCost = priced ? priced.base : dailyBaseFee * durationDays;
+        const totalCost = priced ? priced.total : consumptionCost + baseFeeCost;
+        const pricedDays = priced?.days || durationDays;
+        const dailyCost = totalCost / Math.max(1, pricedDays);
         const weeklyCost = dailyCost * 7;
         const monthlyCost = dailyCost * 30.4;
-        const consumptionCost = delta * unitPrice;
-        const baseFeeCost = dailyBaseFee * durationDays;
-        const totalCost = consumptionCost + baseFeeCost;
 
         meterIntervals.push({
           id: `${m.id}-${curr.id}`,
@@ -345,7 +380,7 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
     return allIntervals.sort(
       (a, b) => new Date(b.endDate).getTime() - new Date(a.endDate).getTime()
     );
-  }, [readings, meters, selectedMeterId, unitPrice, baseFeeMonthly]);
+  }, [readings, meters, selectedMeterId, unitPrice, baseFeeMonthly, breakdown]);
 
   // Calculate timeline chart data with measurement points & deltas
   const timelineChartData = useMemo(() => {
@@ -377,7 +412,7 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
         dailyRate = delta / durationDays;
         weeklyRate = dailyRate * 7;
         monthlyRate = dailyRate * 30.4;
-        deltaCost = (delta * unitPrice) + (dailyBaseFee * durationDays);
+        deltaCost = costForRange(prev.reading_date, r.reading_date)?.total ?? (delta * unitPrice) + (dailyBaseFee * durationDays);
       }
 
       const d = new Date(r.reading_date);
@@ -420,16 +455,21 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
     }
 
     return annotated;
-  }, [readings, effectiveMeterId, readingsTimeframe, unitPrice, baseFeeMonthly, meterMap]);
+  }, [readings, effectiveMeterId, readingsTimeframe, unitPrice, baseFeeMonthly, meterMap, breakdown]);
 
   // Filter history points specifically for this category
   const historyData = (data?.history || []).map((pt) => {
     const val = category === 'electricity' ? pt.electricity : category === 'gas' ? pt.gas : pt.water;
+    let cost = val ? Math.round(val * unitPrice * 100) / 100 : 0;
+    if (breakdown && (pt.date.length === 7 || pt.date.length === 10)) {
+      const matching = breakdown.days.filter((d) => d.date.startsWith(pt.date));
+      if (matching.length) cost = Math.round(matching.reduce((sum, d) => sum + d.total_cost, 0) * 100) / 100;
+    }
     return {
       date: pt.date,
       consumption: val ?? 0,
       is_projected: pt.is_projected ?? false,
-      cost: val ? Math.round(val * unitPrice * 100) / 100 : 0
+      cost
     };
   });
 
@@ -585,6 +625,29 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
           <ChevronRight className="w-3.5 h-3.5" />
         </button>
       </div>
+
+      {(meters.length === 0 || readings.length === 0 || !contract) && (
+        <div className="glass-card rounded-2xl p-4 border border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="space-y-1">
+            <h3 className="text-sm font-semibold text-white">Noch nicht alles eingerichtet</h3>
+            <p className="text-[11px] text-slate-400">
+              {meters.length === 0 ? 'Für diese Sparte ist noch kein Zähler angelegt.' : readings.length === 0 ? 'Für diese Sparte liegt noch kein Zählerstand vor.' : 'Für diese Sparte ist kein Tarif hinterlegt.'}
+              {' '}Ein fehlender Tarif blockiert die Ablesung nicht.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {meters.length === 0 && onNavigateToMeters && (
+              <button type="button" onClick={onNavigateToMeters} className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-medium">Ersten Zähler anlegen</button>
+            )}
+            {readings.length === 0 && (
+              <button type="button" onClick={onOpenScan} className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-medium">Ersten Stand erfassen</button>
+            )}
+            {!contract && (
+              <button type="button" onClick={onNavigateToContracts} className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-200 text-xs font-medium border border-slate-700">Tarif ergänzen</button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Progress of the billing year */}
       <div className="glass-card rounded-xl p-3 border border-slate-800/80 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -772,6 +835,80 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
           </div>
         )}
       </div>
+
+      {/* Shared, dated cost breakdown (Ist vs. Prognose) */}
+      {breakdown && (
+        <div className="glass-card rounded-2xl p-5 border border-slate-800 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+              <h2 className="text-base font-bold text-white flex items-center space-x-2"><Coins className="w-5 h-5 text-emerald-400" /> Kostenaufschlüsselung</h2>
+              <p className="text-[11px] text-slate-400">Dieselbe Berechnung wie Übersicht und Export · jeder Tag mit dem Preis, der an diesem Tag gilt</p>
+            </div>
+            {breakdown.has_gap && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">Tariflücke vorhanden – Teilsumme</span>
+            )}
+            {breakdown.unit_mismatch && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30">Einheiten nicht vereinbar</span>
+            )}
+          </div>
+
+          {breakdown.unit_mismatch && (
+            <div className="text-xs text-rose-200 bg-rose-500/10 border border-rose-500/30 rounded-xl p-3">
+              Der Zähler misst in <strong>{breakdown.meter_unit}</strong>, der Preis liegt je <strong>{breakdown.price_unit}</strong> vor. Ohne bestätigte Umrechnung (z. B. m³ in kWh) wird der Verbrauch angezeigt, aber kein Eurobetrag ausgewiesen. Bitte Zählereinheit oder Preiseinheit korrigieren.
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+            <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 space-y-1">
+              <span className="text-[10px] text-slate-400 uppercase">Ist ({breakdown.eval_date})</span>
+              <div className="flex justify-between"><span className="text-slate-400">Energie</span><span className="font-mono text-white">{formatCurrency(breakdown.totals.actual.energy_cost)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-400">Grundpreis</span><span className="font-mono text-white">{formatCurrency(breakdown.totals.actual.base_cost)}</span></div>
+              <div className="flex justify-between border-t border-slate-800 pt-1"><span className="text-slate-300 font-semibold">Kosten</span><span className="font-mono font-bold text-white">{formatCurrency(breakdown.totals.actual.cost)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-400">Abschläge</span><span className="font-mono text-emerald-400">{formatCurrency(breakdown.totals.actual.payment)}</span></div>
+            </div>
+            <div className="p-3 rounded-xl bg-indigo-950/20 border border-indigo-500/30 space-y-1">
+              <span className="text-[10px] text-indigo-300 uppercase">Prognose (ab {new Date(new Date(breakdown.eval_date).getTime() + 86400000).toISOString().slice(0, 10)})</span>
+              <div className="flex justify-between"><span className="text-slate-400">Energie</span><span className="font-mono text-white">{formatCurrency(breakdown.totals.forecast.energy_cost)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-400">Grundpreis</span><span className="font-mono text-white">{formatCurrency(breakdown.totals.forecast.base_cost)}</span></div>
+              <div className="flex justify-between border-t border-slate-800 pt-1"><span className="text-slate-300 font-semibold">Kosten</span><span className="font-mono font-bold text-indigo-200">{formatCurrency(breakdown.totals.forecast.cost)}</span></div>
+              <p className="text-[10px] text-slate-500">Nennt den Zeitraum; bekannte Folgepreise sind eingerechnet, die Gas-Saisonalität bleibt erhalten.</p>
+            </div>
+            <div className="p-3 rounded-xl bg-amber-950/20 border border-amber-500/30 space-y-1">
+              <span className="text-[10px] text-amber-300 uppercase">Bonus &amp; Saldo</span>
+              <div className="flex justify-between"><span className="text-slate-400">Bonus (1× je Vertrag)</span><span className="font-mono text-amber-300">-{formatCurrency(breakdown.totals.all.bonus)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-400">Kosten mit Bonus</span><span className="font-mono text-white">{formatCurrency(breakdown.totals.all.cost_with_bonus)}</span></div>
+              <div className="flex justify-between border-t border-slate-800 pt-1"><span className="text-slate-300 font-semibold">Saldo</span><span className={`font-mono font-bold ${breakdown.totals.all.balance >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{formatCurrency(breakdown.totals.all.balance)}</span></div>
+            </div>
+          </div>
+
+          {breakdown.periods.length > 0 && (
+            <div className="space-y-1.5">
+              <h3 className="text-[11px] font-semibold text-slate-300">Geltungszeiträume</h3>
+              {breakdown.periods.map((p) => (
+                <div key={`${p.contract_id}-${p.start_date}`} className="flex flex-wrap items-center justify-between gap-2 text-[11px] bg-slate-900/60 rounded-lg px-3 py-2">
+                  <span className="text-slate-300">{p.start_date} – {p.end_date} · {p.provider_name || 'Tarif'} · {formatNumber(p.unit_price, 4)} €/{unit} · {formatCurrency(p.base_fee_monthly)}/Mt.</span>
+                  <span className={`px-1.5 py-0.5 rounded-full border text-[10px] ${
+                    p.status === 'active' ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                      : p.status === 'planned' ? 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30'
+                      : 'bg-slate-800 text-slate-400 border-slate-700'
+                  }`}>{p.status === 'active' ? 'Aktiv' : p.status === 'planned' ? 'Geplant' : 'Beendet'}</span>
+                </div>
+              ))}
+              {breakdown.gaps.map((g) => (
+                <div key={`gap-${g.start_date}`} className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+                  Kein Tarif hinterlegt: {g.start_date} – {g.end_date}. Verbrauch bleibt sichtbar, aber unbepreist (Teilsumme).
+                </div>
+              ))}
+            </div>
+          )}
+
+          {category === 'gas' && breakdown.days.some((d) => d.is_estimated) && (
+            <p className="text-[10px] text-slate-500">
+              Fehlt am Wechseltag eine Ablesung, wird der Intervallverbrauch nach der bestehenden Tagesverteilung aufgeteilt und als Schätzung gekennzeichnet.
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Gas Heating Season Learning & Adaptive Window Card */}
       {category === 'gas' && (
@@ -1745,13 +1882,22 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
                       </span>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => onOpenHistory(m)}
-                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 hover:text-white transition-colors border border-slate-700"
-                    >
-                      Historie
-                    </button>
+                    <div className="flex items-center space-x-2">
+                      <button
+                        type="button"
+                        onClick={() => onOpenScan()}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs text-white font-medium transition-colors"
+                      >
+                        Stand erfassen
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onOpenHistory(m)}
+                        className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 hover:text-white transition-colors border border-slate-700"
+                      >
+                        Historie
+                      </button>
+                    </div>
                   </div>
                 </div>
               );

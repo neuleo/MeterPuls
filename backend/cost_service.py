@@ -49,13 +49,13 @@ def find_gaps(contracts: List[Contract], start: date, end: date) -> List[Dict[st
     cursor = start
     for c in ordered:
         if c.start_date > cursor:
-            gaps.append({"start": cursor, "end": min(c.start_date - timedelta(days=1), end)})
+            gaps.append({"start_date": cursor, "end_date": min(c.start_date - timedelta(days=1), end)})
         cursor = max(cursor, contract_end_exclusive(c) or end + timedelta(days=1))
         if cursor > end:
             break
     if cursor <= end:
-        gaps.append({"start": cursor, "end": end})
-    return [g for g in gaps if g["start"] <= g["end"]]
+        gaps.append({"start_date": cursor, "end_date": end})
+    return [g for g in gaps if g["start_date"] <= g["end_date"]]
 
 
 def _days_in_month(d: date) -> int:
@@ -80,6 +80,9 @@ def compute_cost_breakdown(
     - tariff gaps keep consumption visible but produce no costs
     """
     eval_date = eval_date or date.today()
+    expected_unit = "kWh" if category == "electricity" else "m³"
+    meter_units = {m.unit for m in meters}
+    unit_mismatch = any(u != expected_unit for u in meter_units)
     ordered = sort_contracts(contracts)
     profile_contract = next(
         (c for c in reversed(ordered) if c.start_date <= eval_date),
@@ -106,9 +109,14 @@ def compute_cost_breakdown(
         base_fee = float(contract.base_fee_monthly) if contract and price else 0.0
         payment = float(contract.monthly_payment) if contract and price else 0.0
 
-        energy_cost = consumption * unit_price if price else 0.0
-        base_cost = base_fee / dim if price else 0.0
-        payment_day = payment / dim if price else 0.0
+        if unit_mismatch:
+            energy_cost = 0.0
+            base_cost = 0.0
+            payment_day = 0.0
+        else:
+            energy_cost = consumption * unit_price if price else 0.0
+            base_cost = base_fee / dim if price else 0.0
+            payment_day = payment / dim if price else 0.0
 
         days.append({
             "date": curr,
@@ -120,8 +128,9 @@ def compute_cost_breakdown(
             "contract_id": contract.id if contract else None,
             "price_id": price.id if price else None,
             "unit_price": unit_price,
-            "has_tariff": price is not None,
+            "has_tariff": price is not None and not unit_mismatch,
             "is_gap": price is None and consumption > 0,
+            "unit_mismatch": unit_mismatch,
             "is_estimated": curr not in reading_dates and curr in daily_consumption,
             "is_projected": is_future,
         })
@@ -179,4 +188,7 @@ def compute_cost_breakdown(
             "all": all_totals,
         },
         "has_gap": bool(gaps),
+        "unit_mismatch": unit_mismatch,
+        "meter_unit": ", ".join(sorted(meter_units)) if meter_units else expected_unit,
+        "price_unit": expected_unit,
     }

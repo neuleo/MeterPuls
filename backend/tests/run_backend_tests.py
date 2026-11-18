@@ -1,0 +1,260 @@
+import os
+import sys
+import tempfile
+from datetime import date, timedelta
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="meterpulse_tests_")
+
+from fastapi.testclient import TestClient
+from database import SessionLocal, engine, Base, run_migrations
+from models import Meter, Reading, Contract, ContractPrice
+import main
+
+client = TestClient(main.app)
+
+
+def cleanup():
+    db = SessionLocal()
+    db.query(Reading).delete()
+    db.query(Meter).delete()
+    db.query(ContractPrice).delete()
+    db.query(Contract).delete()
+    db.commit()
+    db.close()
+
+
+def make_contract(category, start, end, unit_price, base=0.0, payment=0.0, bonus=0.0):
+    db = SessionLocal()
+    c = Contract(
+        category=category, start_date=start, end_date=end,
+        base_fee_monthly=base, unit_price=unit_price,
+        monthly_payment=payment, bonus_one_time=bonus,
+    )
+    db.add(c)
+    db.flush()
+    db.add(ContractPrice(
+        contract_id=c.id, valid_from=start,
+        base_fee_monthly=base, unit_price=unit_price, monthly_payment=payment,
+    ))
+    db.commit()
+    cid = c.id
+    db.close()
+    return cid
+
+
+def make_meter_with_readings(values):
+    db = SessionLocal()
+    m = Meter(name="Test", category="electricity", unit="kWh")
+    db.add(m)
+    db.flush()
+    for value, when in values:
+        db.add(Reading(meter_id=m.id, reading_value=value,
+                       reading_date=when, created_at=when))
+    db.commit()
+    mid = m.id
+    db.close()
+    return mid
+
+
+def breakdown(start, end, category="electricity"):
+    r = client.get("/api/analytics/breakdown", params={
+        "category": category,
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+    })
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_price_change_between_readings():
+    cleanup()
+    make_contract("electricity", date(2026, 1, 1), date(2026, 3, 31), 0.30)
+    make_contract("electricity", date(2026, 4, 1), date(2026, 12, 31), 0.40)
+    make_meter_with_readings([
+        (0.0, date(2026, 3, 30)),
+        (30.0, date(2026, 4, 2)),
+    ])
+
+    bd = breakdown(date(2026, 3, 31), date(2026, 4, 1))
+    by_date = {d["date"]: d for d in bd["days"]}
+    march = by_date["2026-03-31"]
+    april = by_date["2026-04-01"]
+    assert abs(march["consumption"] - 10.0) < 0.001, march
+    assert abs(april["consumption"] - 10.0) < 0.001, april
+    assert abs(march["unit_price"] - 0.30) < 0.0001, march
+    assert abs(april["unit_price"] - 0.40) < 0.0001, april
+    total = march["energy_cost"] + april["energy_cost"]
+    assert abs(total - 7.00) < 0.001, total
+    print("PASS: Preiswechsel 31.03/01.04 => 7,00 EUR Energie")
+
+
+def test_planned_successor_does_not_change_actual_costs():
+    cleanup()
+    old_id = make_contract("electricity", date(2026, 1, 1), date(2026, 12, 31), 0.30)
+    make_meter_with_readings([
+        (0.0, date(2026, 3, 1)),
+        (100.0, date(2026, 3, 31)),
+    ])
+
+    today = date.today()
+    future_start = today + timedelta(days=10)
+    future_end = today + timedelta(days=300)
+    future_price = 0.45
+
+    before = breakdown(today, future_end)
+    before_energy = sum(d["energy_cost"] for d in before["days"])
+
+    r = client.post("/api/contracts/plan", json={
+        "category": "electricity",
+        "start_date": future_start.isoformat(),
+        "end_date": future_end.isoformat(),
+        "unit_price": future_price,
+        "base_fee_monthly": 12.0,
+        "monthly_payment": 80.0,
+        "close_predecessor": True,
+    })
+    assert r.status_code == 200, r.text
+    new_id = r.json()["contract_id"]
+
+    listing = client.get("/api/contracts/electricity/list").json()
+    assert listing["active"]["id"] == old_id
+    assert listing["next_change"]["id"] == new_id
+    assert listing["active"]["end_date"] == (future_start - timedelta(days=1)).isoformat()
+
+    after = breakdown(today, future_end)
+    actual_energy = sum(d["energy_cost"] for d in after["days"] if not d["is_projected"])
+    assert abs(actual_energy - before_energy) < 0.001, (actual_energy, before_energy)
+    assert any(d["is_projected"] and abs(d["unit_price"] - future_price) < 0.0001 for d in after["days"])
+
+    r = client.delete(f"/api/contracts/{new_id}")
+    assert r.status_code == 200, r.text
+    restored = breakdown(today, future_end)
+    assert not any(d["is_projected"] and abs(d["unit_price"] - future_price) < 0.0001 for d in restored["days"])
+    print("PASS: Folgevertrag in der Zukunft ändert heutige Kosten nicht")
+
+
+def test_conflicts_gaps_and_bonus():
+    cleanup()
+    make_contract("electricity", date(2026, 1, 1), date(2026, 12, 31), 0.30, bonus=100.0)
+    r = client.post("/api/contracts/plan", json={
+        "category": "electricity",
+        "start_date": "2026-06-01",
+        "unit_price": 0.40,
+        "confirm_backdate": True,
+    })
+    assert r.status_code == 409, r.text
+    assert "Überschneidung" in r.json()["detail"]
+
+    r = client.post("/api/contracts/plan", json={
+        "category": "electricity",
+        "start_date": "2026-06-01",
+        "unit_price": 0.40,
+        "confirm_backdate": True,
+        "close_predecessor": True,
+    })
+    assert r.status_code == 200, r.text
+    new_id = r.json()["contract_id"]
+
+    r = client.post("/api/contracts/price-change", json={
+        "contract_id": new_id,
+        "valid_from": "2026-07-01",
+        "unit_price": 0.50,
+        "confirm_backdate": True,
+    })
+    assert r.status_code == 200, r.text
+
+    bd = breakdown(date(2026, 1, 1), date(2026, 12, 31))
+    assert abs(bd["totals"]["all"]["bonus"] - 100.0) < 0.001, bd["totals"]["all"]
+    assert any(d["date"] == "2026-05-31" and abs(d["unit_price"] - 0.30) < 0.0001 for d in bd["days"])
+    assert any(d["date"] == "2026-06-30" and abs(d["unit_price"] - 0.40) < 0.0001 for d in bd["days"])
+    assert any(d["date"] == "2026-07-01" and abs(d["unit_price"] - 0.50) < 0.0001 for d in bd["days"])
+    print("PASS: Konflikt, Übergang, Preisabschnitt und einmaliger Bonus")
+
+
+def test_gap_keeps_consumption_visible():
+    cleanup()
+    make_contract("electricity", date(2026, 1, 1), date(2026, 3, 31), 0.30)
+    make_contract("electricity", date(2026, 5, 1), date(2026, 12, 31), 0.40)
+    make_meter_with_readings([
+        (0.0, date(2026, 3, 30)),
+        (62.0, date(2026, 5, 2)),
+    ])
+    bd = breakdown(date(2026, 4, 1), date(2026, 4, 30))
+    assert bd["has_gap"], bd["gaps"]
+    gap_days = [d for d in bd["days"] if d["is_gap"]]
+    assert gap_days and all(d["total_cost"] == 0 for d in gap_days)
+    assert sum(d["consumption"] for d in gap_days) > 0
+    print("PASS: Tariflücke zeigt Verbrauch ohne 0-EUR-Bepreisung")
+
+
+def test_reading_idempotency():
+    cleanup()
+    make_meter_with_readings([])
+    db = SessionLocal()
+    mid = db.query(Meter).first().id
+    db.close()
+    payload = {
+        "meter_id": mid,
+        "reading_value": 123.45,
+        "reading_date": "2026-05-01T10:00:00",
+        "client_ref": "retry-token-1",
+    }
+    first = client.post("/api/readings", json=payload)
+    assert first.status_code == 201, first.text
+    second = client.post("/api/readings", json=payload)
+    assert second.status_code == 201, second.text
+    assert first.json()["id"] == second.json()["id"]
+    db = SessionLocal()
+    assert db.query(Reading).filter(Reading.client_ref == "retry-token-1").count() == 1
+    db.close()
+    print("PASS: Wiederholter Upload erzeugt keine Duplikate")
+
+
+def test_unit_mismatch_does_not_invent_euros():
+    cleanup()
+    make_contract("gas", date(2026, 1, 1), date(2026, 12, 31), 0.10)
+    db = SessionLocal()
+    m = Meter(name="Gas kWh", category="gas", unit="kWh")
+    db.add(m)
+    db.flush()
+    for value, when in [(0.0, date(2026, 3, 1)), (10.0, date(2026, 3, 11))]:
+        db.add(Reading(meter_id=m.id, reading_value=value, reading_date=when, created_at=when))
+    db.commit()
+    db.close()
+
+    r = client.get("/api/analytics/breakdown", params={
+        "category": "gas", "start_date": "2026-03-02", "end_date": "2026-03-10"
+    })
+    assert r.status_code == 200, r.text
+    bd = r.json()
+    assert bd["unit_mismatch"] is True
+    assert bd["meter_unit"] == "kWh" and bd["price_unit"] == "m³"
+    assert sum(d["consumption"] for d in bd["days"]) > 0
+    assert all(d["energy_cost"] == 0 and d["total_cost"] == 0 for d in bd["days"])
+    print("PASS: Uneinheitliche Einheiten zeigen Verbrauch ohne Eurobetrag")
+
+
+def test_migration_is_idempotent():
+    run_migrations()
+    db = SessionLocal()
+    contracts = db.query(Contract).count()
+    prices = db.query(ContractPrice).count()
+    db.close()
+    run_migrations()
+    db = SessionLocal()
+    assert db.query(Contract).count() == contracts
+    assert db.query(ContractPrice).count() == prices
+    db.close()
+    print("PASS: Migration zweimal gestartet ohne neue Verträge/Preisabschnitte")
+
+
+if __name__ == "__main__":
+    test_price_change_between_readings()
+    test_planned_successor_does_not_change_actual_costs()
+    test_conflicts_gaps_and_bonus()
+    test_gap_keeps_consumption_visible()
+    test_reading_idempotency()
+    test_unit_mismatch_does_not_invent_euros()
+    test_migration_is_idempotent()
+    print("Alle Backend-Tests bestanden.")

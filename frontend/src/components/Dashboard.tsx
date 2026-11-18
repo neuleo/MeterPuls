@@ -21,8 +21,8 @@ import {
   Droplets,
   AlertCircle
 } from 'lucide-react';
-import { DashboardData, MeterCategory } from '../types';
-import { api } from '../api';
+import { DashboardData, MeterCategory, Meter, ContractListResponse } from '../types';
+import { api, contractApi } from '../api';
 import { StatCard } from './StatCard';
 import { formatCurrency, formatNumber } from '../utils/formatters';
 
@@ -30,16 +30,20 @@ interface DashboardProps {
   onOpenScan: () => void;
   onSelectCategory: (category: MeterCategory) => void;
   onOpenExport?: () => void;
+  refreshKey?: number;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
   onOpenScan,
   onSelectCategory,
-  onOpenExport
+  onOpenExport,
+  refreshKey = 0
 }) => {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [meters, setMeters] = useState<Meter[]>([]);
+  const [contractLists, setContractLists] = useState<Partial<Record<MeterCategory, ContractListResponse>>>({});
 
   // Persistent settings from localStorage
   const [timeframe, setTimeframe] = useState<'30d' | '90d' | 'year' | 'custom'>(() => {
@@ -121,6 +125,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
         customEnd || undefined
       );
       setData(res);
+      const [meterRes, ...lists] = await Promise.all([
+        api.getMeters(),
+        ...(['electricity', 'gas', 'water'] as MeterCategory[]).map((c) => contractApi.list(c))
+      ]);
+      setMeters(meterRes);
+      const map: Partial<Record<MeterCategory, ContractListResponse>> = {};
+      (['electricity', 'gas', 'water'] as MeterCategory[]).forEach((c, i) => { map[c] = lists[i]; });
+      setContractLists(map);
     } catch (err: any) {
       setError(err.message || 'Fehler beim Laden der Dashboard-Daten');
     } finally {
@@ -130,7 +142,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   useEffect(() => {
     loadData();
-  }, [timeframe, granularity, customStart, customEnd]);
+  }, [timeframe, granularity, customStart, customEnd, refreshKey]);
 
   // Clean formatting for chart X-axis
   const formatAxisTick = (val: string) => {
@@ -355,6 +367,58 @@ export const Dashboard: React.FC<DashboardProps> = ({
         </div>
       )}
 
+      {/* Mobile-first overview: last reading, cost period, next change */}
+      <section className="glass-card rounded-2xl p-4 border border-slate-800 space-y-2">
+        <h2 className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Auf einen Blick</h2>
+        {(['electricity', 'gas', 'water'] as MeterCategory[]).map((cat) => {
+          const s = data?.summaries?.[cat];
+          const catMeters = meters.filter((m) => m.category === cat);
+          const latest = catMeters.reduce<Meter | null>((best, m) => {
+            if (!m.latest_reading_date) return best;
+            if (!best || !best.latest_reading_date || m.latest_reading_date > best.latest_reading_date) return m;
+            return best;
+          }, null);
+          const next = contractLists[cat]?.next_change;
+          const noTariff = !contractLists[cat]?.active;
+          return (
+            <button
+              key={cat}
+              type="button"
+              onClick={() => onSelectCategory(cat)}
+              className="w-full text-left p-3 rounded-xl bg-slate-900/70 border border-slate-800 hover:border-slate-600 space-y-1.5"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold text-white flex items-center space-x-1.5">
+                  {cat === 'electricity' ? <Zap className="w-4 h-4 text-amber-400" /> : cat === 'gas' ? <Flame className="w-4 h-4 text-orange-400" /> : <Droplets className="w-4 h-4 text-sky-400" />}
+                  <span>{cat === 'electricity' ? 'Strom' : cat === 'gas' ? 'Gas' : 'Wasser'}</span>
+                </span>
+                <span className="text-sm font-mono font-bold text-white">{s ? formatCurrency(s.period_cost ?? s.cost_so_far) : '—'}</span>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] text-slate-400">
+                <span>
+                  {latest
+                    ? `Letzter Stand ${formatNumber(latest.latest_reading ?? 0, 1)} ${s?.unit || ''} · ${latest.latest_reading_date?.slice(0, 10)}`
+                    : 'Noch kein Stand erfasst'}
+                </span>
+                <span className="text-slate-500">{timeframe === '30d' ? '30 Tage' : timeframe === '90d' ? '90 Tage' : timeframe === 'year' ? 'Jahr' : 'Zeitraum'}</span>
+              </div>
+              {next && (
+                <div className="text-[11px] text-emerald-300">
+                  ab {next.start_date}: {formatNumber(next.unit_price, 3)} €/{s?.unit || 'kWh'}
+                  {next.prices.filter((p) => p.valid_from > next.start_date).map((p) => ` · ab ${p.valid_from}: ${formatNumber(p.unit_price, 3)} €`).join('')}
+                </div>
+              )}
+              {noTariff && <div className="text-[11px] text-amber-300">Kein Tarif hinterlegt – Verbrauch wird angezeigt, nicht bepreist.</div>}
+            </button>
+          );
+        })}
+        {!data && !loading && (
+          <button type="button" onClick={onOpenScan} className="w-full py-2 rounded-xl border border-dashed border-slate-700 text-xs text-emerald-300">
+            Ersten Stand erfassen
+          </button>
+        )}
+      </section>
+
       {/* 3 Main Stat Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
         <StatCard
@@ -561,7 +625,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </span>
           </div>
 
-          <div className="overflow-x-auto">
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead>
                 <tr className="border-b border-slate-800 text-slate-400">
@@ -624,6 +688,25 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 })}
               </tbody>
             </table>
+          </div>
+
+          <div className="md:hidden divide-y divide-slate-800/60">
+            {(['electricity', 'gas', 'water'] as MeterCategory[]).map((cat) => {
+              const s = data?.summaries?.[cat];
+              if (!s) return null;
+              return (
+                <div key={cat} className="py-3 space-y-1 text-xs">
+                  <div className="flex items-center justify-between font-semibold text-white">
+                    <span>{cat === 'electricity' ? 'Strom' : cat === 'gas' ? 'Gas' : 'Wasser'}</span>
+                    <span className="font-mono">{formatCurrency(s.period_cost ?? s.cost_so_far)}</span>
+                  </div>
+                  <div className="flex justify-between text-slate-400"><span>Verbrauch</span><span>{formatNumber(s.period_consumption ?? s.total_consumption, 1)} {s.unit}</span></div>
+                  <div className="flex justify-between text-slate-400"><span>Abschlag</span><span>{formatCurrency(s.period_paid ?? s.paid_so_far)}</span></div>
+                  <div className="flex justify-between text-slate-400"><span>Saldo</span><span>{formatCurrency(s.period_balance ?? s.balance_so_far)}</span></div>
+                  <div className="flex justify-between text-slate-400"><span>Prognose Endsaldo</span><span>{formatCurrency(s.projected_balance)}</span></div>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>

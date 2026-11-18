@@ -39,6 +39,8 @@ export interface ScanItem {
   notes: string;
   confidence?: number;
   errorMessage?: string;
+  saveStatus?: 'idle' | 'saving' | 'saved' | 'failed';
+  saveError?: string;
 }
 
 export function normalizeMeterNumber(num?: string | null): string {
@@ -122,13 +124,17 @@ interface ScanMeterModalProps {
   onClose: () => void;
   onSuccess: () => void;
   meters: Meter[];
+  preselectedMeterId?: number;
+  onManualEntry?: (meter?: Meter) => void;
 }
 
 export const ScanMeterModal: React.FC<ScanMeterModalProps> = ({
   isOpen,
   onClose,
   onSuccess,
-  meters
+  meters,
+  preselectedMeterId,
+  onManualEntry
 }) => {
   const [items, setItems] = useState<ScanItem[]>([]);
   const [isBatchSaving, setIsBatchSaving] = useState(false);
@@ -196,7 +202,7 @@ export const ScanMeterModal: React.FC<ScanMeterModalProps> = ({
         status: 'analyzing',
         targetCategory: 'electricity',
         categoryAutoDetected: false,
-        selectedMeterId: 0,
+        selectedMeterId: preselectedMeterId || 0,
         readingValue: '',
         readingDate: localDatetime,
         exifDateDetected: null,
@@ -231,7 +237,10 @@ export const ScanMeterModal: React.FC<ScanMeterModalProps> = ({
           result.meter_number,
           result.notes
         );
-        const chosenMeterId = matchResult.meterId;
+        const preselected = meters.find((m) => m.id === preselectedMeterId);
+        const chosenMeterId = preselected && preselected.category === detectedCat
+          ? preselected.id
+          : matchResult.meterId;
 
         setItems((prev) =>
           prev.map((i) => {
@@ -299,51 +308,70 @@ export const ScanMeterModal: React.FC<ScanMeterModalProps> = ({
     });
   };
 
-  const handleSaveAll = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (items.length === 0) return;
+  const saveItems = async (toSave: ScanItem[]) => {
+    if (toSave.length === 0) return true;
 
-    // Validate all items
-    for (let idx = 0; idx < items.length; idx++) {
-      const item = items[idx];
+    for (let idx = 0; idx < toSave.length; idx++) {
+      const item = toSave[idx];
       const num = parseFloat(item.readingValue);
       if (isNaN(num) || num < 0) {
-        setGlobalError(
-          `Foto #${idx + 1} (${getCategoryLabel(item.targetCategory)}): Bitte einen gültigen Zählerstand eintragen.`
-        );
-        return;
+        setGlobalError(`Foto: Bitte einen gültigen Zählerstand eintragen.`);
+        return false;
       }
       if (!item.selectedMeterId) {
-        setGlobalError(
-          `Foto #${idx + 1}: Bitte einen Zähler für ${getCategoryLabel(item.targetCategory)} auswählen.`
-        );
-        return;
+        setGlobalError(`Foto: Bitte einen Zähler auswählen.`);
+        return false;
       }
     }
 
     setIsBatchSaving(true);
     setGlobalError(null);
 
-    try {
-      // Save all readings with their respective images
-      for (const item of items) {
+    const outcomes = await Promise.all(toSave.map(async (item) => {
+      setItems((prev) => prev.map((i) => i.id === item.id ? { ...i, saveStatus: 'saving', saveError: undefined } : i));
+      try {
         const formData = new FormData();
         formData.append('meter_id', item.selectedMeterId.toString());
         formData.append('reading_value', parseFloat(item.readingValue).toString());
         formData.append('reading_date', new Date(item.readingDate).toISOString());
         if (item.notes) formData.append('notes', item.notes);
+        formData.append('client_ref', item.id);
         formData.append('file', item.file);
 
         await api.uploadAndCreateReading(formData);
+        setItems((prev) => prev.map((i) => i.id === item.id ? { ...i, saveStatus: 'saved' } : i));
+        return true;
+      } catch (err: any) {
+        setItems((prev) => prev.map((i) => i.id === item.id ? {
+          ...i,
+          saveStatus: 'failed',
+          saveError: err.message || 'Speichern fehlgeschlagen'
+        } : i));
+        return false;
       }
+    }));
 
-      onSuccess();
-      onClose();
-    } catch (err: any) {
-      setGlobalError(err.message || 'Fehler beim Speichern der Zählerstände.');
-    } finally {
-      setIsBatchSaving(false);
+    setIsBatchSaving(false);
+    onSuccess();
+
+    const failed = outcomes.filter((ok) => !ok).length;
+    if (failed > 0) {
+      setGlobalError(`${failed} Eintrag(e) konnten nicht gespeichert werden. Nur fehlgeschlagene Einträge erneut senden.`);
+      return false;
     }
+    return true;
+  };
+
+  const handleSaveAll = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const pending = items.filter((i) => i.saveStatus !== 'saved');
+    if (pending.length === 0) return;
+    const allOk = await saveItems(pending);
+    if (allOk) onClose();
+  };
+
+  const retryFailed = async () => {
+    await saveItems(items.filter((i) => i.saveStatus === 'failed'));
   };
 
   if (!isOpen) return null;
@@ -419,7 +447,7 @@ export const ScanMeterModal: React.FC<ScanMeterModalProps> = ({
         {/* Empty State: Upload / Camera Options */}
         {items.length === 0 ? (
           <div className="py-6 space-y-6">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               {/* Option 1: Multi-file / Gallery Upload */}
               <button
                 type="button"
@@ -455,6 +483,22 @@ export const ScanMeterModal: React.FC<ScanMeterModalProps> = ({
                   Kamera-Direktstart
                 </span>
               </button>
+
+              {onManualEntry && (
+                <button
+                  type="button"
+                  onClick={() => onManualEntry(preselectedMeterId ? meters.find((m) => m.id === preselectedMeterId) : undefined)}
+                  className="flex flex-col items-center justify-center p-7 rounded-2xl border-2 border-dashed border-slate-700 hover:border-slate-500 bg-slate-900/40 hover:bg-slate-900/80 text-slate-200 transition-all group active:scale-[0.99]"
+                >
+                  <div className="p-3.5 rounded-full bg-slate-800 text-slate-300 mb-3 group-hover:scale-110 transition-transform">
+                    <Gauge className="w-7 h-7" />
+                  </div>
+                  <span className="font-bold text-base text-white">Manuell eingeben</span>
+                  <span className="text-xs text-slate-400 mt-1 text-center">
+                    Ohne Kamera und ohne konfigurierte KI – Zählerstand direkt eintragen
+                  </span>
+                </button>
+              )}
             </div>
 
             <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 text-xs text-slate-300 flex items-start space-x-3">
@@ -485,9 +529,16 @@ export const ScanMeterModal: React.FC<ScanMeterModalProps> = ({
             )}
 
             {globalError && (
-              <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-xs text-rose-300 flex items-start space-x-2">
-                <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0 mt-0.5" />
-                <span>{globalError}</span>
+              <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-xs text-rose-300 flex items-start justify-between gap-2">
+                <div className="flex items-start space-x-2">
+                  <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0 mt-0.5" />
+                  <span>{globalError}</span>
+                </div>
+                {items.some((i) => i.saveStatus === 'failed') && (
+                  <button type="button" onClick={retryFailed} className="flex items-center space-x-1 whitespace-nowrap text-rose-200 hover:text-white underline">
+                    <RotateCcw className="w-3 h-3" /><span>Fehlgeschlagene erneut senden</span>
+                  </button>
+                )}
               </div>
             )}
 
@@ -591,6 +642,24 @@ export const ScanMeterModal: React.FC<ScanMeterModalProps> = ({
                             <AlertCircle className="w-3 h-3 mr-1 text-rose-400" />
                             Manuell prüfen
                           </span>
+                        )}
+                        {item.saveStatus === 'saving' && (
+                          <span className="inline-flex items-center text-[11px] text-indigo-300 bg-indigo-500/15 px-2 py-0.5 rounded-full border border-indigo-500/30">Speichert…</span>
+                        )}
+                        {item.saveStatus === 'saved' && (
+                          <span className="inline-flex items-center text-[11px] text-emerald-300 bg-emerald-500/15 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                            <CheckCircle2 className="w-3 h-3 mr-1" />Gespeichert
+                          </span>
+                        )}
+                        {item.saveStatus === 'failed' && (
+                          <button
+                            type="button"
+                            onClick={() => saveItems([item])}
+                            className="inline-flex items-center text-[11px] text-rose-300 bg-rose-500/15 px-2 py-0.5 rounded-full border border-rose-500/30"
+                            title={item.saveError}
+                          >
+                            <RotateCcw className="w-3 h-3 mr-1" />Erneut senden
+                          </button>
                         )}
 
                         <button
