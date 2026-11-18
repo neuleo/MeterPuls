@@ -290,6 +290,7 @@ class CostDay(BaseModel):
     is_estimated: bool
     is_projected: bool
     unit_mismatch: bool = False
+    is_forecast_consumption: bool = False
 
 class CostPeriod(BaseModel):
     contract_id: Optional[int] = None
@@ -310,6 +311,7 @@ class CostTotalsBlock(BaseModel):
     balance: float = 0.0
     bonus: float = 0.0
     cost_with_bonus: float = 0.0
+    balance_with_bonus: float = 0.0
 
 class CostBreakdownResponse(BaseModel):
     category: str

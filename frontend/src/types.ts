@@ -211,6 +211,7 @@ export interface CostTotalsBlock {
   balance: number;
   bonus: number;
   cost_with_bonus: number;
+  balance_with_bonus: number;
 }
 
 export interface CostBreakdown {

@@ -215,11 +215,11 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
   const projectedConsumption = breakdown
     ? breakdown.totals.actual.consumption + breakdown.totals.forecast.consumption
     : summary?.projected_consumption ?? 0;
-  const projectedTotalCost = breakdown?.totals.all.cost_with_bonus ?? summary?.projected_total_cost ?? 0;
+  const projectedTotalCost = breakdown?.totals.all.cost ?? summary?.projected_total_cost ?? 0;
   const projectedTotalPaid = breakdown
-    ? breakdown.totals.actual.payment + breakdown.totals.forecast.payment
+    ? breakdown.totals.all.payment
     : summary?.projected_total_paid ?? 0;
-  const projectedBalance = projectedTotalPaid - projectedTotalCost;
+  const projectedBalance = breakdown?.totals.all.balance_with_bonus ?? summary?.projected_balance ?? 0;
   const isProjectedRefund = projectedBalance >= 0;
 
   // Days elapsed in year or contract
@@ -235,8 +235,13 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
   const monthlyAvgConsumption = dailyAvgConsumption * 30.4;
   const monthlyAvgCost = monthlyAvgConsumption * unitPrice + baseFeeMonthly;
 
-  // Optimal installment (Empfohlener Abschlag, um bei 0 € herauszukommen)
-  const optimalInstallment = projectedTotalCost > 0 ? Math.round((projectedTotalCost / 12) * 10) / 10 : 0;
+  // Optimal installment over the full horizon of all contracts (not a fixed 12 months)
+  const horizonStart = breakdown?.periods?.[0]?.start_date;
+  const lastPeriod = breakdown?.periods?.[breakdown.periods.length - 1];
+  const horizonMonths = horizonStart && lastPeriod
+    ? Math.max(1, (new Date(lastPeriod.end_date).getTime() - new Date(horizonStart).getTime()) / (1000 * 60 * 60 * 24 * 30.4375) + 1)
+    : 12;
+  const optimalInstallment = projectedTotalCost > 0 ? Math.round((projectedTotalCost / horizonMonths) * 10) / 10 : 0;
 
   // Environmental impact (CO2-Emissionen)
   // Strom: ~0.380 kg/kWh (dt. Strommix), Gas: ~0.200 kg/kWh (1 m³ Gas ≈ 10 kWh -> ~2.0 kg/m³), Wasser: ~0.35 kg/m³
@@ -794,7 +799,7 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
 
             <div className="mt-3 pt-2.5 border-t border-slate-800/80 text-[11px] space-y-1">
               <div className="flex justify-between text-slate-400">
-                <span>Gezahlte Abschläge:</span>
+                <span>Abschläge bis Vertragsende:</span>
                 <span className="font-mono text-white">{formatCurrency(projectedTotalPaid)}</span>
               </div>
               <div className="flex justify-between text-slate-400">
@@ -874,10 +879,13 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
               <p className="text-[10px] text-slate-500">Nennt den Zeitraum; bekannte Folgepreise sind eingerechnet, die Gas-Saisonalität bleibt erhalten.</p>
             </div>
             <div className="p-3 rounded-xl bg-amber-950/20 border border-amber-500/30 space-y-1">
-              <span className="text-[10px] text-amber-300 uppercase">Bonus &amp; Saldo</span>
+              <span className="text-[10px] text-amber-300 uppercase">Bonus &amp; Saldo (bis {breakdown.end_date})</span>
+              <div className="flex justify-between"><span className="text-slate-400">Kosten brutto</span><span className="font-mono text-white">{formatCurrency(breakdown.totals.all.cost)}</span></div>
               <div className="flex justify-between"><span className="text-slate-400">Bonus (1× je Vertrag)</span><span className="font-mono text-amber-300">-{formatCurrency(breakdown.totals.all.bonus)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-400">Kosten mit Bonus</span><span className="font-mono text-white">{formatCurrency(breakdown.totals.all.cost_with_bonus)}</span></div>
-              <div className="flex justify-between border-t border-slate-800 pt-1"><span className="text-slate-300 font-semibold">Saldo</span><span className={`font-mono font-bold ${breakdown.totals.all.balance >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{formatCurrency(breakdown.totals.all.balance)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-400">Kosten netto</span><span className="font-mono text-white">{formatCurrency(breakdown.totals.all.cost_with_bonus)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-400">Abschläge</span><span className="font-mono text-emerald-400">{formatCurrency(breakdown.totals.all.payment)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-400">Saldo ohne Bonus</span><span className="font-mono text-slate-200">{formatCurrency(breakdown.totals.all.balance)}</span></div>
+              <div className="flex justify-between border-t border-slate-800 pt-1"><span className="text-slate-300 font-semibold">Saldo inkl. Bonus</span><span className={`font-mono font-bold ${breakdown.totals.all.balance_with_bonus >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{formatCurrency(breakdown.totals.all.balance_with_bonus)}</span></div>
             </div>
           </div>
 

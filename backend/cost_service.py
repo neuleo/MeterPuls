@@ -3,7 +3,7 @@ import calendar
 from typing import Dict, List, Optional, Tuple, Any
 
 from models import Meter, Contract, ContractPrice
-from calculations import calculate_category_daily
+from calculations import calculate_category_daily, get_gas_day_weight
 
 
 def contract_end_exclusive(contract: Optional[Contract]) -> Optional[date]:
@@ -91,11 +91,46 @@ def compute_cost_breakdown(
     daily_consumption = calculate_category_daily(meters, contract=profile_contract)
 
     reading_dates = {r.reading_date.date() for m in meters for r in m.readings}
+    last_reading_date = max(reading_dates) if reading_dates else None
+
+    warmwater_src = getattr(profile_contract, "warmwater_source", "electricity") or "electricity"
+    heat_start = getattr(profile_contract, "heating_start_month", 10) or 10
+    heat_end = getattr(profile_contract, "heating_end_month", 4) or 4
+
+    measured_consumption = sum(daily_consumption.values())
+    measured_days = len(daily_consumption)
+    if category == "gas":
+        measured_weight = sum(
+            get_gas_day_weight(d, warmwater_src, heat_start, heat_end)
+            for d in daily_consumption
+        )
+        annual_rate = (
+            measured_consumption / measured_weight
+            if measured_weight > 0.0001 and measured_consumption > 0
+            else (650.0 if warmwater_src == "electricity" else 1200.0)
+        )
+    else:
+        annual_daily_rate = (
+            measured_consumption / measured_days
+            if measured_days > 0 and measured_consumption > 0
+            else (19.0 if category == "electricity" else 0.35)
+        )
 
     days: List[Dict[str, Any]] = []
     curr = start_date
     while curr <= end_date:
-        consumption = daily_consumption.get(curr, 0.0)
+        consumption = daily_consumption.get(curr)
+        is_forecast_consumption = False
+        if consumption is None and (last_reading_date is None or curr > last_reading_date):
+            if category == "gas":
+                consumption = annual_rate * get_gas_day_weight(
+                    curr, warmwater_src, heat_start, heat_end
+                )
+            else:
+                consumption = annual_daily_rate
+            is_forecast_consumption = True
+        if consumption is None:
+            consumption = 0.0
         contract = next(
             (c for c in ordered if c.start_date <= curr and
              (contract_end_exclusive(c) is None or contract_end_exclusive(c) > curr)),
@@ -131,8 +166,9 @@ def compute_cost_breakdown(
             "has_tariff": price is not None and not unit_mismatch,
             "is_gap": price is None and consumption > 0,
             "unit_mismatch": unit_mismatch,
-            "is_estimated": curr not in reading_dates and curr in daily_consumption,
+            "is_estimated": curr not in reading_dates and (curr in daily_consumption or is_forecast_consumption),
             "is_projected": is_future,
+            "is_forecast_consumption": is_forecast_consumption,
         })
         curr += timedelta(days=1)
 
@@ -155,6 +191,7 @@ def compute_cost_breakdown(
     all_totals = totals(days)
     all_totals["bonus"] = bonus
     all_totals["cost_with_bonus"] = round(max(0.0, all_totals["cost"] - bonus), 2)
+    all_totals["balance_with_bonus"] = round(all_totals["payment"] - all_totals["cost"] + bonus, 2)
 
     periods: List[Dict[str, Any]] = []
     for c in ordered:

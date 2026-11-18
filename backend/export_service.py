@@ -25,7 +25,12 @@ def generate_export_data(db: Session) -> Dict[str, str]:
 
     all_meters = db.query(Meter).order_by(Meter.category.asc(), Meter.name.asc()).all()
     contracts_list = db.query(Contract).all()
-    contracts: Dict[str, Contract] = {c.category: c for c in contracts_list}
+    contracts: Dict[str, Contract] = {}
+    for contract in sorted(contracts_list, key=lambda c: (c.start_date, c.id)):
+        if contract.start_date <= today and (contract.end_date is None or contract.end_date >= today):
+            contracts[contract.category] = contract
+        elif contract.category not in contracts:
+            contracts[contract.category] = contract
 
     meters_by_cat = {
         "electricity": [m for m in all_meters if m.category == "electricity"],

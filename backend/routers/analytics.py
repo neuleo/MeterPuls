@@ -57,20 +57,37 @@ def get_dashboard_analytics(
         "water": [m for m in all_meters if m.category == "water"]
     }
 
-    # Fetch contracts
-    contracts = {c.category: c for c in db.query(Contract).all()}
+    # Fetch all contracts – a category can have an active and a planned contract.
+    all_contracts = db.query(Contract).all()
+    contracts_by_cat = {
+        cat: sorted(
+            [c for c in all_contracts if c.category == cat],
+            key=lambda c: (c.start_date, c.id)
+        )
+        for cat in ["electricity", "gas", "water"]
+    }
+    active_contracts = {}
+    for cat, cat_contracts in contracts_by_cat.items():
+        active_contracts[cat] = next(
+            (
+                c for c in reversed(cat_contracts)
+                if c.start_date <= today and
+                (c.end_date is None or c.end_date >= today)
+            ),
+            None,
+        )
 
     # Compute summaries for each category based on selected timeframe
     summaries = {
         cat: calculate_contract_summary(
             category=cat,
             meters=meters_by_cat[cat],
-            contract=contracts.get(cat),
+            contract=active_contracts[cat],
             eval_date=today,
             period_start=calc_start,
             period_end=calc_end,
             timeframe=timeframe,
-            all_contracts=[c for c in contracts.values() if c.category == cat]
+            all_contracts=contracts_by_cat[cat]
         )
         for cat in ["electricity", "gas", "water"]
     }
@@ -82,7 +99,7 @@ def get_dashboard_analytics(
         end_date=calc_end,
         granularity=granularity,
         timeframe=timeframe,
-        contracts=contracts
+        contracts=active_contracts
     )
 
     return DashboardAnalyticsResponse(

@@ -102,7 +102,8 @@ def test_planned_successor_does_not_change_actual_costs():
     future_end = today + timedelta(days=300)
     future_price = 0.45
 
-    before = breakdown(today, future_end)
+    measured_range = (date(2026, 3, 1), date(2026, 3, 31))
+    before = breakdown(*measured_range)
     before_energy = sum(d["energy_cost"] for d in before["days"])
 
     r = client.post("/api/contracts/plan", json={
@@ -122,10 +123,11 @@ def test_planned_successor_does_not_change_actual_costs():
     assert listing["next_change"]["id"] == new_id
     assert listing["active"]["end_date"] == (future_start - timedelta(days=1)).isoformat()
 
-    after = breakdown(today, future_end)
-    actual_energy = sum(d["energy_cost"] for d in after["days"] if not d["is_projected"])
+    after = breakdown(*measured_range)
+    actual_energy = sum(d["energy_cost"] for d in after["days"])
     assert abs(actual_energy - before_energy) < 0.001, (actual_energy, before_energy)
-    assert any(d["is_projected"] and abs(d["unit_price"] - future_price) < 0.0001 for d in after["days"])
+    future_bd = breakdown(today, future_end)
+    assert any(d["is_projected"] and abs(d["unit_price"] - future_price) < 0.0001 for d in future_bd["days"])
 
     r = client.delete(f"/api/contracts/{new_id}")
     assert r.status_code == 200, r.text
@@ -292,6 +294,69 @@ def test_repair_orphan_price_foreign_key():
     print("PASS: Verwaiste Preis-FK repariert, Einfügen funktioniert wieder")
 
 
+def test_forecast_keeps_seasonal_energy_and_bonus_separate():
+    cleanup()
+    make_contract(
+        "gas", date(2026, 1, 1), date(2026, 12, 31), 0.1157,
+        base=10.64, payment=84.0, bonus=177.0,
+    )
+    make_meter_with_readings([
+        (0.0, date(2026, 1, 1)),
+        (500.0, date(2026, 11, 15)),
+    ])
+    # Reuse the gas meter but with the correct category/unit for the breakdown.
+    db = SessionLocal()
+    gas_meter = db.query(Meter).first()
+    gas_meter.category = "gas"
+    gas_meter.unit = "m³"
+    db.commit()
+    db.close()
+
+    bd = breakdown(date(2026, 1, 1), date(2026, 12, 31), "gas")
+    forecast = bd["totals"]["forecast"]
+    assert forecast["consumption"] > 0, forecast
+    assert forecast["energy_cost"] > 0, forecast
+    assert any(d["is_forecast_consumption"] and d["consumption"] > 0 for d in bd["days"])
+
+    all_totals = bd["totals"]["all"]
+    assert abs(all_totals["balance_with_bonus"] - (
+        all_totals["payment"] - all_totals["cost"] + all_totals["bonus"]
+    )) < 0.01, all_totals
+
+    dashboard = client.get("/api/analytics/dashboard", params={"timeframe": "year", "granularity": "month"})
+    assert dashboard.status_code == 200, dashboard.text
+    summary = dashboard.json()["summaries"]["gas"]
+    assert summary["projected_total_cost"] >= summary["cost_so_far"] - 0.01, summary
+    assert abs(summary["projected_balance"] - (
+        summary["projected_total_paid"] - summary["projected_total_cost"] + summary["bonus_one_time"]
+    )) < 0.05, summary
+    print("PASS: Prognose mit Saisonalität und Bonus getrennt von Bruttokosten")
+
+
+def test_dashboard_uses_all_contracts_like_breakdown():
+    cleanup()
+    make_contract("gas", date(2026, 1, 1), date(2026, 6, 30), 0.20, base=10.0, payment=50.0)
+    make_contract("gas", date(2026, 7, 1), date(2026, 12, 31), 0.30, base=12.0, payment=60.0)
+    make_meter_with_readings([
+        (0.0, date(2026, 1, 1)),
+        (100.0, date(2026, 12, 31)),
+    ])
+    db = SessionLocal()
+    m = db.query(Meter).first()
+    m.category = "gas"
+    m.unit = "m³"
+    db.commit()
+    db.close()
+
+    bd = breakdown(date(2026, 1, 1), date(2026, 12, 31), "gas")
+    dash = client.get("/api/analytics/dashboard", params={"timeframe": "year", "granularity": "month"})
+    assert dash.status_code == 200, dash.text
+    s = dash.json()["summaries"]["gas"]
+    assert abs(s["projected_total_cost"] - bd["totals"]["all"]["cost"]) < 0.05, (s, bd["totals"]["all"])
+    assert abs(s["projected_total_paid"] - bd["totals"]["all"]["payment"]) < 0.05, (s, bd["totals"]["all"])
+    print("PASS: Dashboard und Breakdown nutzen denselben Vertragsverlauf")
+
+
 def test_migration_is_idempotent():
     run_migrations()
     db = SessionLocal()
@@ -315,5 +380,7 @@ if __name__ == "__main__":
     test_unit_mismatch_does_not_invent_euros()
     test_open_ended_contract_is_safe()
     test_repair_orphan_price_foreign_key()
+    test_forecast_keeps_seasonal_energy_and_bonus_separate()
+    test_dashboard_uses_all_contracts_like_breakdown()
     test_migration_is_idempotent()
     print("Alle Backend-Tests bestanden.")

@@ -690,12 +690,12 @@ def calculate_contract_summary(
     projected_energy_cost_total = projected_consumption * unit_price
     projected_total_cost_regular = projected_base_fee_total + projected_energy_cost_total
 
-    # Deduct one-time bonus in 1st contract year if applicable
+    # Bonus is a separate one-off credit; keep gross costs visible.
     effective_first_year_cost = max(0.0, projected_total_cost_regular - bonus_one_time)
-    projected_total_cost = effective_first_year_cost if bonus_one_time > 0 else projected_total_cost_regular
+    projected_total_cost = projected_total_cost_regular
 
     projected_total_paid = months_total * monthly_payment
-    projected_balance = projected_total_paid - projected_total_cost
+    projected_balance = projected_total_paid - projected_total_cost + bonus_one_time
 
     if all_contracts:
         from cost_service import compute_cost_breakdown
@@ -739,8 +739,8 @@ def calculate_contract_summary(
             projected_total_paid = paid_so_far + f["payment"]
             bonus_one_time = sum(float(c.bonus_one_time or 0.0) for c in all_contracts if c.start_date <= eval_date)
             effective_first_year_cost = round(max(0.0, projected_total_cost_regular - bonus_one_time), 2)
-            projected_total_cost = effective_first_year_cost if bonus_one_time > 0 else projected_total_cost_regular
-            projected_balance = round(projected_total_paid - projected_total_cost, 2)
+            projected_total_cost = round(projected_total_cost_regular, 2)
+            projected_balance = round(projected_total_paid - projected_total_cost + bonus_one_time, 2)
         else:
             projected_consumption = total_consumption
             projected_total_cost_regular = cost_so_far
