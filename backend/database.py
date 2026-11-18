@@ -95,6 +95,18 @@ def _rebuild_contracts(conn):
     if not needs_rebuild:
         return
 
+    price_rows = []
+    if "contract_prices" in [
+        r[0] for r in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()
+    ]:
+        price_rows = [
+            tuple(row) for row in conn.execute(text(
+                "SELECT id, contract_id, valid_from, base_fee_monthly, unit_price, "
+                "monthly_payment, created_at FROM contract_prices"
+            )).fetchall()
+        ]
+        conn.execute(text("DROP TABLE contract_prices"))
+
     conn.execute(text("PRAGMA foreign_keys=OFF"))
     try:
         index_names = [
@@ -126,6 +138,9 @@ def _rebuild_contracts(conn):
     finally:
         conn.execute(text("PRAGMA foreign_keys=ON"))
 
+    _create_contract_prices_table(conn)
+    _restore_price_rows(conn, price_rows)
+
 def _add_reading_client_ref(conn):
     columns = _table_columns(conn, "readings")
     if "client_ref" not in columns:
@@ -134,8 +149,7 @@ def _add_reading_client_ref(conn):
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_readings_client_ref ON readings(client_ref)"
     ))
 
-def _seed_contract_prices(conn):
-    """One initial price section per legacy contract, starting at its contract start."""
+def _create_contract_prices_table(conn):
     conn.execute(text(
         "CREATE TABLE IF NOT EXISTS contract_prices ("
         "id INTEGER PRIMARY KEY, "
@@ -150,11 +164,55 @@ def _seed_contract_prices(conn):
     conn.execute(text(
         "CREATE INDEX IF NOT EXISTS ix_contract_prices_contract_id ON contract_prices(contract_id)"
     ))
+
+def _restore_price_rows(conn, rows):
+    if not rows:
+        return
+    valid_ids = {r[0] for r in conn.execute(text("SELECT id FROM contracts")).fetchall()}
+    now = datetime.utcnow().isoformat(sep=" ")
+    for row in rows:
+        if row[1] not in valid_ids:
+            continue
+        conn.execute(text(
+            "INSERT OR IGNORE INTO contract_prices "
+            "(id, contract_id, valid_from, base_fee_monthly, unit_price, monthly_payment, created_at) "
+            "VALUES (:id, :cid, :from, :base, :unit, :pay, :created)"
+        ), {
+            "id": row[0], "cid": row[1], "from": row[2], "base": row[3] or 0.0,
+            "unit": row[4] or 0.0, "pay": row[5] or 0.0, "created": row[6] or now,
+        })
+
+def _seed_contract_prices(conn):
+    """One initial price section per legacy contract, starting at its contract start."""
+    _create_contract_prices_table(conn)
     conn.execute(text(
         "INSERT OR IGNORE INTO contract_prices "
         "(contract_id, valid_from, base_fee_monthly, unit_price, monthly_payment, created_at) "
         "SELECT id, start_date, base_fee_monthly, unit_price, monthly_payment, :now FROM contracts"
     ), {"now": datetime.utcnow().isoformat(sep=" ")})
+
+def _repair_contract_prices_fk(conn):
+    """Heal installations where the price table still references a removed table."""
+    tables = {
+        r[0] for r in conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )).fetchall()
+    }
+    if "contract_prices" not in tables:
+        return
+    fks = conn.execute(text("PRAGMA foreign_key_list(contract_prices)")).fetchall()
+    if not any(fk[2] != "contracts" for fk in fks):
+        return
+
+    rows = [
+        tuple(row) for row in conn.execute(text(
+            "SELECT id, contract_id, valid_from, base_fee_monthly, unit_price, "
+            "monthly_payment, created_at FROM contract_prices"
+        )).fetchall()
+    ]
+    conn.execute(text("DROP TABLE contract_prices"))
+    _create_contract_prices_table(conn)
+    _restore_price_rows(conn, rows)
 
 def run_migrations():
     """
@@ -163,19 +221,20 @@ def run_migrations():
     """
     with engine.connect() as conn:
         try:
-            if _migration_applied(conn, "contracts_v2"):
-                return
-            has_data = False
-            try:
-                has_data = conn.execute(text("SELECT COUNT(*) FROM contracts")).scalar() > 0
-            except Exception:
+            if not _migration_applied(conn, "contracts_v2"):
                 has_data = False
-            if has_data:
-                _backup_database()
-            _rebuild_contracts(conn)
-            _add_reading_client_ref(conn)
+                try:
+                    has_data = conn.execute(text("SELECT COUNT(*) FROM contracts")).scalar() > 0
+                except Exception:
+                    has_data = False
+                if has_data:
+                    _backup_database()
+                _rebuild_contracts(conn)
+                _add_reading_client_ref(conn)
+                _mark_applied(conn, "contracts_v2")
+
+            _repair_contract_prices_fk(conn)
             _seed_contract_prices(conn)
-            _mark_applied(conn, "contracts_v2")
             conn.commit()
         except Exception as e:
             conn.rollback()

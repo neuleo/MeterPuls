@@ -59,7 +59,7 @@ class ContractBase(BaseModel):
     provider_name: Optional[str] = None
     tariff_name: Optional[str] = None
     start_date: date
-    end_date: date
+    end_date: Optional[date] = None
     base_fee_monthly: float = Field(default=0.0, ge=0)   # EUR/Monat
     unit_price: float = Field(default=0.0, ge=0)         # EUR/kWh bzw. EUR/m³
     monthly_payment: float = Field(default=0.0, ge=0)    # Abschlag EUR/Monat

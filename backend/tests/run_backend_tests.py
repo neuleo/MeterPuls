@@ -235,6 +235,63 @@ def test_unit_mismatch_does_not_invent_euros():
     print("PASS: Uneinheitliche Einheiten zeigen Verbrauch ohne Eurobetrag")
 
 
+def test_open_ended_contract_is_safe():
+    cleanup()
+    make_contract("gas", date(2026, 1, 1), None, 0.118, base=14.5, payment=130.0)
+    listing = client.get("/api/contracts/gas/list")
+    assert listing.status_code == 200, listing.text
+    assert listing.json()["active"]["end_date"] is None
+    dashboard = client.get("/api/analytics/dashboard", params={"timeframe": "30d", "granularity": "day"})
+    assert dashboard.status_code == 200, dashboard.text
+    bd = breakdown(date(2026, 3, 1), date(2026, 3, 31), "gas")
+    assert all(d["has_tariff"] for d in bd["days"])
+    print("PASS: Offener Folgevertrag bricht Liste und Dashboard nicht")
+
+
+def test_repair_orphan_price_foreign_key():
+    import sqlite3
+    from database import DATABASE_URL
+
+    path = DATABASE_URL.replace("sqlite:///", "")
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("ALTER TABLE contracts RENAME TO contracts_old")
+    conn.execute("DROP TABLE IF EXISTS contracts")
+    conn.execute(
+        "CREATE TABLE contracts (id INTEGER PRIMARY KEY, category VARCHAR(20) NOT NULL, "
+        "provider_name VARCHAR(100), tariff_name VARCHAR(100), start_date DATE NOT NULL, "
+        "end_date DATE, base_fee_monthly FLOAT NOT NULL DEFAULT 0.0, "
+        "unit_price FLOAT NOT NULL DEFAULT 0.0, monthly_payment FLOAT NOT NULL DEFAULT 0.0, "
+        "bonus_one_time FLOAT NOT NULL DEFAULT 0.0, bonus_notes VARCHAR(200), "
+        "warmwater_source VARCHAR(50) DEFAULT 'electricity', heating_start_month INTEGER DEFAULT 10, "
+        "heating_end_month INTEGER DEFAULT 4, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"
+    )
+    rows = conn.execute(
+        "SELECT id, category, provider_name, tariff_name, start_date, end_date, base_fee_monthly, "
+        "unit_price, monthly_payment, bonus_one_time, bonus_notes, warmwater_source, "
+        "heating_start_month, heating_end_month, created_at, updated_at FROM contracts_old"
+    ).fetchall()
+    conn.executemany("INSERT INTO contracts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+    conn.execute("DROP TABLE contracts_old")
+    conn.commit()
+    conn.close()
+
+    from database import run_migrations
+    run_migrations()
+
+    conn = sqlite3.connect(path)
+    fks = conn.execute("PRAGMA foreign_key_list(contract_prices)").fetchall()
+    assert all(fk[2] == "contracts" for fk in fks), fks
+    conn.close()
+
+    cleanup()
+    cid = make_contract("electricity", date(2026, 1, 1), date(2026, 12, 31), 0.30)
+    db = SessionLocal()
+    assert db.query(ContractPrice).filter(ContractPrice.contract_id == cid).count() == 1
+    db.close()
+    print("PASS: Verwaiste Preis-FK repariert, Einfügen funktioniert wieder")
+
+
 def test_migration_is_idempotent():
     run_migrations()
     db = SessionLocal()
@@ -256,5 +313,7 @@ if __name__ == "__main__":
     test_gap_keeps_consumption_visible()
     test_reading_idempotency()
     test_unit_mismatch_does_not_invent_euros()
+    test_open_ended_contract_is_safe()
+    test_repair_orphan_price_foreign_key()
     test_migration_is_idempotent()
     print("Alle Backend-Tests bestanden.")

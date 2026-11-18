@@ -482,7 +482,8 @@ def detect_gas_heating_season(
 
     # Count elapsed heating days
     c_start = contract.start_date if contract else date(eval_date.year, 1, 1)
-    curr_eval = min(eval_date, contract.end_date if contract else date(eval_date.year, 12, 31))
+    contract_end = (contract.end_date or date(eval_date.year, 12, 31)) if contract else date(eval_date.year, 12, 31)
+    curr_eval = min(eval_date, contract_end)
     elapsed_heating_days = 0
     curr = c_start
     while curr <= curr_eval:
@@ -568,7 +569,7 @@ def calculate_contract_summary(
         bonus_notes = None
     else:
         contract_start = contract.start_date
-        contract_end = contract.end_date
+        contract_end = contract.end_date or max(eval_date, date(eval_date.year, 12, 31))
         base_fee = float(contract.base_fee_monthly)
         unit_price = float(contract.unit_price)
         monthly_payment = float(contract.monthly_payment)
