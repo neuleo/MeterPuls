@@ -538,7 +538,8 @@ def calculate_contract_summary(
     eval_date: Optional[date] = None,
     period_start: Optional[date] = None,
     period_end: Optional[date] = None,
-    timeframe: str = "30d"
+    timeframe: str = "30d",
+    all_contracts: Optional[List[Contract]] = None
 ) -> CategorySummary:
     """
     Computes consumption, costs, payments, balance, and end-of-contract predictions.
@@ -694,6 +695,56 @@ def calculate_contract_summary(
 
     projected_total_paid = months_total * monthly_payment
     projected_balance = projected_total_paid - projected_total_cost
+
+    if all_contracts:
+        from cost_service import compute_cost_breakdown
+
+        period_breakdown = compute_cost_breakdown(
+            category, meters, all_contracts,
+            period_start or eval_date - timedelta(days=30),
+            min(period_end or eval_date, eval_date),
+            eval_date=eval_date,
+        )
+        period_totals = period_breakdown["totals"]["actual"]
+        period_consumption = period_totals["consumption"]
+        period_cost = period_totals["cost"]
+        period_paid = period_totals["payment"]
+        period_balance = period_totals["balance"]
+
+        bounds = [c.start_date for c in all_contracts]
+        from cost_service import contract_end_exclusive
+        ends = [contract_end_exclusive(c) for c in all_contracts if contract_end_exclusive(c)]
+        actual_start = min(bounds) if bounds else eval_date
+        actual_end = min(max(ends) - timedelta(days=1), eval_date) if ends else eval_date
+        if actual_start <= actual_end:
+            actual_breakdown = compute_cost_breakdown(
+                category, meters, all_contracts, actual_start, actual_end, eval_date=eval_date
+            )
+            a = actual_breakdown["totals"]["actual"]
+            cost_so_far = a["cost"]
+            paid_so_far = a["payment"]
+            balance_so_far = a["balance"]
+            total_consumption = a["consumption"]
+
+        forecast_start = eval_date + timedelta(days=1)
+        forecast_end = max(ends) - timedelta(days=1) if ends else eval_date
+        if forecast_start <= forecast_end:
+            forecast_breakdown = compute_cost_breakdown(
+                category, meters, all_contracts, forecast_start, forecast_end, eval_date=eval_date
+            )
+            f = forecast_breakdown["totals"]["forecast"]
+            projected_consumption = total_consumption + f["consumption"]
+            projected_total_cost_regular = cost_so_far + f["cost"]
+            projected_total_paid = paid_so_far + f["payment"]
+            bonus_one_time = sum(float(c.bonus_one_time or 0.0) for c in all_contracts if c.start_date <= eval_date)
+            effective_first_year_cost = round(max(0.0, projected_total_cost_regular - bonus_one_time), 2)
+            projected_total_cost = effective_first_year_cost if bonus_one_time > 0 else projected_total_cost_regular
+            projected_balance = round(projected_total_paid - projected_total_cost, 2)
+        else:
+            projected_consumption = total_consumption
+            projected_total_cost_regular = cost_so_far
+            projected_total_paid = paid_so_far
+            projected_balance = balance_so_far
 
     return CategorySummary(
         category=category,

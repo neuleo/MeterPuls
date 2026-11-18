@@ -1,7 +1,7 @@
 import io
 import csv
 import calendar
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Any, Optional
 from sqlalchemy.orm import Session
 
@@ -11,6 +11,7 @@ from calculations import (
     calculate_time_series,
     MONTH_NAMES_DE
 )
+from cost_service import compute_cost_breakdown
 
 def format_de_num(val: Optional[float], decimals: int = 2) -> str:
     if val is None:
@@ -41,10 +42,31 @@ def generate_export_data(db: Session) -> Dict[str, str]:
             eval_date=today,
             period_start=date(year, 1, 1),
             period_end=date(year, 12, 31),
-            timeframe="year"
+            timeframe="year",
+            all_contracts=[c for c in contracts_list if c.category == cat]
         )
         for cat in ["electricity", "gas", "water"]
     }
+
+    daily_cost_maps: Dict[str, Dict[date, Dict[str, float]]] = {}
+    for cat, cat_meters in meters_by_cat.items():
+        reading_dates = [r.reading_date.date() for m in cat_meters for r in m.readings]
+        span_start = min(reading_dates) if reading_dates else date(year, 1, 1)
+        bd = compute_cost_breakdown(
+            cat, cat_meters, [c for c in contracts_list if c.category == cat],
+            span_start, today, eval_date=today
+        )
+        daily_cost_maps[cat] = {d["date"]: d for d in bd["days"]}
+
+    monthly_costs: Dict[str, Dict[str, float]] = {cat: {} for cat in meters_by_cat}
+    for cat, cat_meters in meters_by_cat.items():
+        bd = compute_cost_breakdown(
+            cat, cat_meters, [c for c in contracts_list if c.category == cat],
+            date(year, 1, 1), date(year, 12, 31), eval_date=today
+        )
+        for day in bd["days"]:
+            key = day["date"].strftime("%Y-%m")
+            monthly_costs[cat][key] = monthly_costs[cat].get(key, 0.0) + day["total_cost"]
 
     # 2. Monthly time-series for 2026
     monthly_series = calculate_time_series(
@@ -80,6 +102,7 @@ def generate_export_data(db: Session) -> Dict[str, str]:
     for m in all_meters:
         contract = contracts.get(m.category)
         unit_price = contract.unit_price if contract else 0.0
+        day_map = daily_cost_maps.get(m.category, {})
         sorted_readings = sorted(m.readings, key=lambda r: r.reading_date)
 
         prompt_meter_lines = [f"### {m.category.capitalize()}: {m.name} (Zählernr: {m.meter_number or 'k.A.'}, Einheit: {m.unit})"]
@@ -93,6 +116,13 @@ def generate_export_data(db: Session) -> Dict[str, str]:
                 delta_days = (r.reading_date.date() - prev.reading_date.date()).days
                 rate_day = (delta_val / delta_days) if delta_days > 0 else 0.0
                 cost_day = rate_day * unit_price
+                interval_days = [
+                    prev.reading_date.date() + timedelta(days=i)
+                    for i in range(1, delta_days + 1)
+                ]
+                priced = [day_map[d] for d in interval_days if d in day_map and day_map[d]["has_tariff"]]
+                if priced:
+                    cost_day = sum(d["total_cost"] for d in priced) / float(delta_days)
                 val_str = f"{r.reading_value:.3f}"
                 d_val_str = f"{delta_val:.3f}"
                 d_days_str = str(delta_days)
@@ -163,10 +193,10 @@ def generate_export_data(db: Session) -> Dict[str, str]:
         g_m3 = pt.gas or 0.0
         w_m3 = pt.water or 0.0
 
-        e_cost = (e_kwh * elec_up) + elec_bf
-        g_cost = (g_m3 * gas_up) + gas_bf
-        w_cost = (w_m3 * water_up) + water_bf
-        total_cost = e_cost + g_cost + w_cost
+        e_cost = round(monthly_costs["electricity"].get(pt.date, e_kwh * elec_up + elec_bf), 2)
+        g_cost = round(monthly_costs["gas"].get(pt.date, g_m3 * gas_up + gas_bf), 2)
+        w_cost = round(monthly_costs["water"].get(pt.date, w_m3 * water_up + water_bf), 2)
+        total_cost = round(e_cost + g_cost + w_cost, 2)
 
         status_str = "Prognose" if pt.is_projected else "Gemessen"
 

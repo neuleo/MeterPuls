@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from database import engine, Base, SessionLocal, DATABASE_DIR, run_migrations
-from models import Meter, Reading, Contract, AISetting
+from models import Meter, Reading, Contract, ContractPrice, AISetting
 from routers import meters, readings, contracts, ai, analytics
 
 # Create database tables and apply schema updates
@@ -109,7 +109,16 @@ def init_default_data():
         for c_data in contracts_data:
             existing = db.query(Contract).filter(Contract.category == c_data["category"]).first()
             if not existing:
-                db.add(Contract(**c_data))
+                new_contract = Contract(**c_data)
+                db.add(new_contract)
+                db.flush()
+                db.add(ContractPrice(
+                    contract_id=new_contract.id,
+                    valid_from=c_data["start_date"],
+                    base_fee_monthly=c_data["base_fee_monthly"],
+                    unit_price=c_data["unit_price"],
+                    monthly_payment=c_data["monthly_payment"],
+                ))
 
         # 3. Default AI Setting
         ai_setting = db.query(AISetting).first()

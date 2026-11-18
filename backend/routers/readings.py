@@ -34,7 +34,13 @@ def create_reading(reading_in: ReadingCreate, db: Session = Depends(get_db)):
     if not meter:
         raise HTTPException(status_code=404, detail="Zähler nicht gefunden")
 
+    if reading_in.client_ref:
+        existing = db.query(Reading).filter(Reading.client_ref == reading_in.client_ref).first()
+        if existing:
+            return existing
+
     new_reading = Reading(
+        client_ref=reading_in.client_ref,
         meter_id=reading_in.meter_id,
         reading_value=reading_in.reading_value,
         reading_date=reading_in.reading_date,
@@ -52,12 +58,18 @@ async def create_reading_with_image(
     reading_value: float = Form(...),
     reading_date: datetime = Form(...),
     notes: Optional[str] = Form(None),
+    client_ref: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db)
 ):
     meter = db.query(Meter).filter(Meter.id == meter_id).first()
     if not meter:
         raise HTTPException(status_code=404, detail="Zähler nicht gefunden")
+
+    if client_ref:
+        existing = db.query(Reading).filter(Reading.client_ref == client_ref).first()
+        if existing:
+            return existing
 
     saved_filename = None
     if file and file.filename:
@@ -74,7 +86,8 @@ async def create_reading_with_image(
         reading_value=reading_value,
         reading_date=reading_date,
         image_path=saved_filename,
-        notes=notes
+        notes=notes,
+        client_ref=client_ref
     )
     db.add(new_reading)
     db.commit()

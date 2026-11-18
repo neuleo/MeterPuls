@@ -1,11 +1,12 @@
 from typing import Optional
 from datetime import date, timedelta
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from database import get_db
 from models import Meter, Contract
-from schemas import DashboardAnalyticsResponse, ExportDataResponse
+from schemas import DashboardAnalyticsResponse, ExportDataResponse, CostBreakdownResponse
 from calculations import calculate_time_series, calculate_contract_summary
+from cost_service import compute_cost_breakdown
 from export_service import generate_export_data
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
@@ -68,7 +69,8 @@ def get_dashboard_analytics(
             eval_date=today,
             period_start=calc_start,
             period_end=calc_end,
-            timeframe=timeframe
+            timeframe=timeframe,
+            all_contracts=[c for c in contracts.values() if c.category == cat]
         )
         for cat in ["electricity", "gas", "water"]
     }
@@ -89,3 +91,23 @@ def get_dashboard_analytics(
         granularity=granularity,
         timeframe=timeframe
     )
+
+@router.get("/breakdown", response_model=CostBreakdownResponse)
+def get_cost_breakdown(
+    category: str = Query(..., pattern="^(electricity|gas|water)$"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    db: Session = Depends(get_db)
+):
+    """Detailed, dated cost breakdown shared by dashboard, detail view and export."""
+    today = date.today()
+    if start_date > end_date:
+        raise HTTPException(status_code=400, detail="Startdatum liegt nach dem Enddatum")
+
+    contracts = db.query(Contract).filter(Contract.category == category).all()
+    meters = db.query(Meter).filter(Meter.category == category).all()
+    unit = "kWh" if category == "electricity" else "m³"
+    result = compute_cost_breakdown(
+        category, meters, contracts, start_date, min(end_date, today + timedelta(days=365)), eval_date=today
+    )
+    return CostBreakdownResponse(unit=unit, **result)

@@ -38,6 +38,7 @@ class ReadingBase(BaseModel):
 
 class ReadingCreate(ReadingBase):
     image_path: Optional[str] = None
+    client_ref: Optional[str] = None
 
 class ReadingUpdate(BaseModel):
     reading_value: Optional[float] = Field(None, ge=0)
@@ -196,3 +197,127 @@ class ExportDataResponse(BaseModel):
     csv_readings: str
     csv_monthly: str
     summary_text: str
+
+# --- Dated contract planning schemas ---
+
+class PriceSectionBase(BaseModel):
+    valid_from: date
+    base_fee_monthly: float = Field(default=0.0, ge=0)
+    unit_price: float = Field(default=0.0, ge=0)
+    monthly_payment: float = Field(default=0.0, ge=0)
+
+class PriceSectionResponse(PriceSectionBase):
+    id: int
+    contract_id: int
+
+    class Config:
+        from_attributes = True
+
+class ContractPlanCreate(BaseModel):
+    category: str = Field(..., pattern="^(electricity|gas|water)$")
+    provider_name: Optional[str] = None
+    tariff_name: Optional[str] = None
+    start_date: date
+    end_date: Optional[date] = None
+    base_fee_monthly: float = Field(default=0.0, ge=0)
+    unit_price: float = Field(default=0.0, ge=0)
+    monthly_payment: float = Field(default=0.0, ge=0)
+    bonus_one_time: float = Field(default=0.0, ge=0)
+    bonus_notes: Optional[str] = None
+    warmwater_source: str = "electricity"
+    heating_start_month: int = 10
+    heating_end_month: int = 4
+    close_predecessor: bool = False
+    confirm_backdate: bool = False
+
+class ContractPlanPreview(BaseModel):
+    category: str
+    planned_start: date
+    active_contract_id: Optional[int] = None
+    active_until: Optional[date] = None
+    new_contract_id: Optional[int] = None
+    message: str
+    warnings: List[str] = []
+
+class PriceChangeCreate(BaseModel):
+    contract_id: int
+    valid_from: date
+    unit_price: Optional[float] = Field(None, ge=0)
+    base_fee_monthly: Optional[float] = Field(None, ge=0)
+    monthly_payment: Optional[float] = Field(None, ge=0)
+    confirm_backdate: bool = False
+
+class ContractStatus(str):
+    ACTIVE = "active"
+    PLANNED = "planned"
+    ENDED = "ended"
+
+class ContractDetail(ContractResponse):
+    status: str
+    prices: List[PriceSectionResponse] = []
+
+    class Config:
+        from_attributes = True
+
+class ContractListResponse(BaseModel):
+    active: Optional[ContractDetail] = None
+    next_change: Optional[ContractDetail] = None
+    history: List[ContractDetail] = []
+    gaps: List[Dict[str, Any]] = []
+
+    class Config:
+        from_attributes = True
+
+class ContractActionResponse(BaseModel):
+    ok: bool = True
+    message: str
+    contract_id: Optional[int] = None
+
+# --- Shared cost breakdown schemas ---
+
+class CostDay(BaseModel):
+    date: date
+    consumption: float
+    energy_cost: float
+    base_cost: float
+    payment: float
+    total_cost: float
+    contract_id: Optional[int] = None
+    price_id: Optional[int] = None
+    unit_price: float
+    has_tariff: bool
+    is_gap: bool
+    is_estimated: bool
+    is_projected: bool
+
+class CostPeriod(BaseModel):
+    contract_id: Optional[int] = None
+    start_date: date
+    end_date: date
+    status: str = "gap"
+    provider_name: Optional[str] = None
+    tariff_name: Optional[str] = None
+    unit_price: float = 0.0
+    base_fee_monthly: float = 0.0
+
+class CostTotalsBlock(BaseModel):
+    consumption: float = 0.0
+    energy_cost: float = 0.0
+    base_cost: float = 0.0
+    cost: float = 0.0
+    payment: float = 0.0
+    balance: float = 0.0
+    bonus: float = 0.0
+    cost_with_bonus: float = 0.0
+
+class CostBreakdownResponse(BaseModel):
+    category: str
+    unit: str
+    start_date: date
+    end_date: date
+    eval_date: date
+    days: List[CostDay]
+    periods: List[CostPeriod]
+    gaps: List[CostPeriod]
+    totals: Dict[str, CostTotalsBlock]
+    has_gap: bool = False
