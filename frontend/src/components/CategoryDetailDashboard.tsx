@@ -119,27 +119,41 @@ export const CategoryDetailDashboard: React.FC<CategoryDetailDashboardProps> = (
     setLoading(true);
     setError(null);
     try {
-      const today = new Date();
-      const from = `${today.getFullYear() - 2}-01-01`;
-      const to = `${today.getFullYear() + 1}-12-31`;
-      const [analyticsRes, contractsRes, metersRes, readingsRes, breakdownRes] = await Promise.all([
+      const [analyticsRes, contractsRes, metersRes, readingsRes] = await Promise.all([
         api.getDashboardAnalytics(timeframe, granularity, customStart, customEnd),
         api.getContracts(),
         api.getMeters(),
-        api.getReadings(undefined, category, 500),
-        getCostBreakdown(category, from, to)
+        api.getReadings(undefined, category, 500)
       ]);
 
       setData(analyticsRes);
-      setBreakdown(breakdownRes);
 
+      const today = new Date();
+      const todayIso = today.toISOString().slice(0, 10);
       const cMap: any = { electricity: null, gas: null, water: null };
+      const catContracts = (contractsRes || []).filter((c) => c.category === category);
       if (contractsRes) {
-        contractsRes.forEach((c) => {
-          cMap[c.category] = c;
+        (['electricity', 'gas', 'water'] as MeterCategory[]).forEach((cat) => {
+          const list = contractsRes.filter((c) => c.category === cat);
+          cMap[cat] = list.find((c) =>
+            c.start_date <= todayIso && (!c.end_date || c.end_date >= todayIso)
+          ) || list[list.length - 1] || null;
         });
       }
       setContracts(cMap);
+
+      const starts = catContracts.map((c) => c.start_date).filter(Boolean).sort();
+      const ends = catContracts
+        .map((c) => c.end_date)
+        .filter((d): d is string => !!d)
+        .sort();
+      const from = starts[0] || `${today.getFullYear()}-01-01`;
+      const hasOpenContract = catContracts.some((c) => !c.end_date);
+      const to = hasOpenContract || ends.length === 0
+        ? new Date(today.getTime() + 365 * 86400000).toISOString().slice(0, 10)
+        : ends[ends.length - 1];
+      const breakdownRes = await getCostBreakdown(category, from, to);
+      setBreakdown(breakdownRes);
 
       const filteredMeters = metersRes.filter((m) => m.category === category);
       setMeters(filteredMeters);
